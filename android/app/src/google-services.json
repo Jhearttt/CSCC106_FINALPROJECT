@@ -1,0 +1,40 @@
+{
+  "project_info": {
+    "project_number": "573536485548",
+    "firebase_url": "https://cspc106-cabahugfinalproject-default-rtdb.asia-southeast1.firebasedatabase.app",
+    "project_id": "cspc106-cabahugfinalproject",
+    "storage_bucket": "cspc106-cabahugfinalproject.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:573536485548:android:969653a7be15739c7a5f09",
+        "android_client_info": {
+          "package_name": "com.example.final_project"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "573536485548-dqbuusiu17e5oc5k7lghpqq1sliskebf.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA6py5JQH5Dn0R73SI2Fken9uM-wazm7XY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "573536485548-dqbuusiu17e5oc5k7lghpqq1sliskebf.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
