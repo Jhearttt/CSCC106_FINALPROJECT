@@ -5,7 +5,6 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
-// ─── Palette ──────────────────────────────────────────────────────────────────
 const kBase        = Color(0xFFF0EEFF);
 const kInk         = Color(0xFF1E1B4B);
 const kInkMid      = Color(0xFF4338CA);
@@ -23,19 +22,32 @@ const kHeroGrad = LinearGradient(
   begin: Alignment.topLeft, end: Alignment.bottomRight,
 );
 
-// ─── Typography ───────────────────────────────────────────────────────────────
-TextStyle get headingXL => GoogleFonts.poppins(
-    fontSize: 26, fontWeight: FontWeight.w800, letterSpacing: -0.6, color: kInk);
-TextStyle get headingLG => GoogleFonts.poppins(
-    fontSize: 20, fontWeight: FontWeight.w700, letterSpacing: -0.4, color: kInk);
-TextStyle get statNumber => GoogleFonts.poppins(
-    fontSize: 28, fontWeight: FontWeight.w800, letterSpacing: -0.8, color: kInkMid);
-TextStyle get labelText => GoogleFonts.inter(
-    fontSize: 11, fontWeight: FontWeight.w600, color: kInkLight);
-TextStyle get buttonText => GoogleFonts.inter(
-    fontSize: 13, fontWeight: FontWeight.w700, letterSpacing: 0.3, color: Colors.white);
+TextStyle get headingLG  => GoogleFonts.poppins(fontSize: 18,
+    fontWeight: FontWeight.w700, letterSpacing: -0.3, color: kInk);
+TextStyle get statNumber => GoogleFonts.poppins(fontSize: 26,
+    fontWeight: FontWeight.w800, letterSpacing: -0.8, color: kInkMid);
+TextStyle get labelText  => GoogleFonts.inter(fontSize: 11,
+    fontWeight: FontWeight.w600, color: kInkLight);
+TextStyle get buttonText => GoogleFonts.inter(fontSize: 13,
+    fontWeight: FontWeight.w700, letterSpacing: 0.3, color: Colors.white);
 
-// ─── Dashboard ────────────────────────────────────────────────────────────────
+// ── Badge helper ──────────────────────────────────────────────────────────────
+String _badgeForPoints(int pts) {
+  if (pts >= 500) return '🏆 Legend';
+  if (pts >= 200) return '💎 Expert';
+  if (pts >= 100) return '⭐ Helper';
+  if (pts >= 40)  return '🌱 Rising';
+  return '🆕 Newcomer';
+}
+
+Color _badgeColor(int pts) {
+  if (pts >= 500) return const Color(0xFFFFD700);
+  if (pts >= 200) return const Color(0xFF60A5FA);
+  if (pts >= 100) return const Color(0xFFA78BFA);
+  if (pts >= 40)  return const Color(0xFF34D399);
+  return const Color(0xFFA5B4FC);
+}
+
 class Dashboard extends StatelessWidget {
   final int? localUserId;
   const Dashboard({super.key, this.localUserId});
@@ -51,63 +63,63 @@ class DashboardHome extends StatefulWidget {
 }
 
 class _DashboardHomeState extends State<DashboardHome> {
-  // ── Stats from getDashboardStats() — all 4 keys ──
   Map<String, int> _stats = {
-    "totalPosts":    0,
-    "openRequests":  0,
-    "skillOffers":   0,
-    "resolvedPosts": 0,
+    "totalPosts": 0, "openRequests": 0, "skillOffers": 0, "resolvedPosts": 0,
   };
-
-  Map<String, List<Map<String, dynamic>>> _categoryPosts = {
-    "Academic":    [],
-    "Design":      [],
-    "Programming": [],
-  };
-
-  List<Map<String, dynamic>> _recentPosts = []; // ← Added: quick navigation per SRS
+  List<Map<String, dynamic>> _recentPosts   = [];
+  List<Map<String, dynamic>> _topHelpers    = [];
+  List<Map<String, dynamic>> _smartMatches  = [];
   bool _loading = true;
+  String? _matchCategory; // category of latest help request
 
   User? get _user => FirebaseAuth.instance.currentUser;
 
   @override
-  void initState() {
-    super.initState();
-    _refreshDashboard();
-  }
+  void initState() { super.initState(); _refreshDashboard(); }
 
   Future<void> _refreshDashboard() async {
     setState(() => _loading = true);
+    final db    = DatabaseHelper();
 
-    final db = DatabaseHelper();
-    final stats = await db.getDashboardStats();
+    // Boost check — auto-boost expired posts
+    await db.checkAndBoostExpiredPosts();
 
-    Map<String, List<Map<String, dynamic>>> catPosts = {};
-    for (String cat in ["Academic", "Design", "Programming"]) {
-      catPosts[cat] = await db.getAllPosts(category: cat, status: null);
+    final stats   = await db.getDashboardStats();
+    final recent  = await db.getRecentPosts(limit: 5);
+    final topHelp = await db.getTopHelpers();
+
+    // Smart match: find the most recent open Help Request and suggest helpers
+    final openRequests = await db.getAllPosts(
+        postType: 'Help Request', status: 'Open');
+    List<Map<String, dynamic>> matches = [];
+    String? matchCat;
+    if (openRequests.isNotEmpty) {
+      matchCat = openRequests.first['category'] as String?;
+      if (matchCat != null) {
+        matches = await db.getSuggestedHelpers(matchCat);
+      }
     }
-
-    // Recent posts for quick navigation (SRS: "Quick navigation options")
-    final recent = await db.getRecentPosts(limit: 5);
 
     if (!mounted) return;
     setState(() {
-      _stats = {
+      _stats         = {
         "totalPosts":    stats["totalPosts"]    ?? 0,
         "openRequests":  stats["openRequests"]  ?? 0,
         "skillOffers":   stats["skillOffers"]   ?? 0,
         "resolvedPosts": stats["resolvedPosts"] ?? 0,
       };
-      _categoryPosts = catPosts;
       _recentPosts   = recent;
-      _loading = false;
+      _topHelpers    = topHelp;
+      _smartMatches  = matches;
+      _matchCategory = matchCat;
+      _loading       = false;
     });
   }
 
-  String get greeting {
-    final hour = DateTime.now().hour;
-    if (hour < 12) return "Good morning";
-    if (hour < 17) return "Good afternoon";
+  String get _greeting {
+    final h = DateTime.now().hour;
+    if (h < 12) return "Good morning";
+    if (h < 17) return "Good afternoon";
     return "Good evening";
   }
 
@@ -119,19 +131,23 @@ class _DashboardHomeState extends State<DashboardHome> {
         child: _loading
             ? const Center(child: CircularProgressIndicator(color: kViolet))
             : RefreshIndicator(
-          onRefresh: _refreshDashboard,
-          color: kViolet,
+          onRefresh: _refreshDashboard, color: kViolet,
           child: SingleChildScrollView(
             physics: const AlwaysScrollableScrollPhysics(),
             padding: const EdgeInsets.all(20),
             child: Column(children: [
               _buildWelcomeBanner(),
-              const SizedBox(height: 24),
+              const SizedBox(height: 22),
               _buildStatsGrid(),
-              const SizedBox(height: 24),
-              _buildRecentPosts(),          // ← Added
-              const SizedBox(height: 24),
-              _buildCategoryPosts(),
+              const SizedBox(height: 22),
+              if (_smartMatches.isNotEmpty) ...[
+                _buildSmartMatch(),
+                const SizedBox(height: 22),
+              ],
+              _buildRecentPosts(),
+              const SizedBox(height: 22),
+              _buildLeaderboard(),
+              const SizedBox(height: 22),
 
             ]),
           ),
@@ -140,87 +156,140 @@ class _DashboardHomeState extends State<DashboardHome> {
     );
   }
 
-  // ── Welcome Banner ────────────────────────────────────────────────────────
+  // ── Welcome banner ─────────────────────────────────────────────────────────
   Widget _buildWelcomeBanner() {
     final name = _user?.displayName?.split(" ").first ?? "Student";
     return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(24),
-      decoration: BoxDecoration(
-          gradient: kHeroGrad, borderRadius: BorderRadius.circular(28)),
+      width: double.infinity, padding: const EdgeInsets.all(22),
+      decoration: BoxDecoration(gradient: kHeroGrad,
+          borderRadius: BorderRadius.circular(26)),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text("$greeting 👋",
+        Text("$_greeting 👋",
             style: GoogleFonts.inter(color: Colors.white70, fontSize: 13)),
         const SizedBox(height: 4),
-        Text(name, style: GoogleFonts.poppins(
-            color: Colors.white, fontWeight: FontWeight.w700, fontSize: 20)),
-        const SizedBox(height: 18),
+        Text(name, style: GoogleFonts.poppins(color: Colors.white,
+            fontWeight: FontWeight.w700, fontSize: 20)),
+        const SizedBox(height: 14),
         Text("Student Help & Skills Network",
-            style: GoogleFonts.poppins(color: Colors.white, fontSize: 24,
+            style: GoogleFonts.poppins(color: Colors.white, fontSize: 22,
                 fontWeight: FontWeight.w800, letterSpacing: -0.5)),
-        const SizedBox(height: 6),
+        const SizedBox(height: 5),
         Text("Connect · Learn · Grow Together",
-            style: GoogleFonts.inter(color: Colors.white70, fontSize: 13)),
+            style: GoogleFonts.inter(color: Colors.white70, fontSize: 12.5)),
       ]),
     );
   }
 
-  // ── Stats Grid — 4 cards: Total Posts, Open Requests, Skill Offers, Resolved
+  // ── Stats grid ─────────────────────────────────────────────────────────────
   Widget _buildStatsGrid() {
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Text("Overview", style: headingLG),
       const SizedBox(height: 12),
       GridView.count(
-        crossAxisCount: 2,
-        shrinkWrap: true,
+        crossAxisCount: 2, shrinkWrap: true,
         physics: const NeverScrollableScrollPhysics(),
-        crossAxisSpacing: 14, mainAxisSpacing: 14,
-        childAspectRatio: 1.55,
+        crossAxisSpacing: 12, mainAxisSpacing: 12, childAspectRatio: 1.55,
         children: [
-          _buildStatCard("Total Posts",    _stats["totalPosts"]!,    kViolet,
-              Icons.article_rounded),
-          _buildStatCard("Open Requests",  _stats["openRequests"]!,  kBlush,
-              Icons.help_outline_rounded),
-          _buildStatCard("Skill Offers",   _stats["skillOffers"]!,   kMint,
-              Icons.lightbulb_outline_rounded),
-          _buildStatCard("Resolved",       _stats["resolvedPosts"]!, kAmber,
-              Icons.check_circle_outline_rounded),
+          _statCard("Total Posts",    _stats["totalPosts"]!,    kViolet, Icons.article_rounded),
+          _statCard("Open Requests",  _stats["openRequests"]!,  kBlush,  Icons.help_outline_rounded),
+          _statCard("Skill Offers",   _stats["skillOffers"]!,   kMint,   Icons.lightbulb_outline_rounded),
+          _statCard("Resolved",       _stats["resolvedPosts"]!, kAmber,  Icons.check_circle_outline_rounded),
         ],
       ),
     ]);
   }
 
-  Widget _buildStatCard(String label, int count, Color color, IconData icon) {
+  Widget _statCard(String label, int count, Color color, IconData icon) {
     return Container(
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: kBorderGlass),
-        boxShadow: [BoxShadow(color: color.withOpacity(0.10),
-            blurRadius: 12, offset: const Offset(0, 4))],
-      ),
+      decoration: BoxDecoration(color: Colors.white,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: kBorderGlass),
+          boxShadow: [BoxShadow(color: color.withOpacity(0.10),
+              blurRadius: 12, offset: const Offset(0, 4))]),
       padding: const EdgeInsets.all(16),
       child: Row(children: [
-        Container(
-          width: 44, height: 44,
-          decoration: BoxDecoration(
-            color: color.withOpacity(0.12),
-            borderRadius: BorderRadius.circular(14),
-          ),
-          child: Icon(icon, color: color, size: 22),
-        ),
-        const SizedBox(width: 12),
+        Container(width: 42, height: 42,
+            decoration: BoxDecoration(color: color.withOpacity(0.12),
+                borderRadius: BorderRadius.circular(12)),
+            child: Icon(icon, color: color, size: 20)),
+        const SizedBox(width: 10),
         Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisAlignment: MainAxisAlignment.center, children: [
               Text("$count", style: statNumber),
-              const SizedBox(height: 2),
               Text(label, style: labelText),
             ])),
       ]),
     );
   }
 
-  // ── Recent Posts — quick navigation per SRS ──────────────────────────────
+  // ── Smart Match suggestions ────────────────────────────────────────────────
+  Widget _buildSmartMatch() {
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Row(children: [
+        Text("Smart Match", style: headingLG),
+        const SizedBox(width: 8),
+        Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+            decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                    colors: [kViolet, kVioletLight],
+                    begin: Alignment.topLeft, end: Alignment.bottomRight),
+                borderRadius: BorderRadius.circular(10)),
+            child: const Text("AI", style: TextStyle(color: Colors.white,
+                fontSize: 10, fontWeight: FontWeight.w800))),
+      ]),
+      const SizedBox(height: 4),
+      Text("Students who can help with $_matchCategory requests",
+          style: labelText),
+      const SizedBox(height: 10),
+      ..._smartMatches.map((user) => _matchCard(user)),
+    ]);
+  }
+
+  Widget _matchCard(Map<String, dynamic> user) {
+    final pts     = (user['points'] as int? ?? 0);
+    final helped  = (user['helpCount'] as int? ?? 0);
+    final initial = (user['fullName'] as String? ?? '?')[0].toUpperCase();
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: kBorderGlass),
+        boxShadow: [BoxShadow(color: kViolet.withOpacity(0.06),
+            blurRadius: 10, offset: const Offset(0, 4))],
+      ),
+      child: Row(children: [
+        Container(width: 38, height: 38,
+            decoration: const BoxDecoration(shape: BoxShape.circle,
+                gradient: LinearGradient(colors: [kViolet, kVioletLight],
+                    begin: Alignment.topLeft, end: Alignment.bottomRight)),
+            child: Center(child: Text(initial, style: const TextStyle(
+                color: Colors.white, fontWeight: FontWeight.w800, fontSize: 15)))),
+        const SizedBox(width: 10),
+        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(user['fullName'] ?? '', style: GoogleFonts.poppins(
+                  fontWeight: FontWeight.w700, color: kInk, fontSize: 13)),
+              Text(user['skillTitle'] ?? '', style: labelText),
+            ])),
+        Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+          Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                  color: _badgeColor(pts).withOpacity(0.15),
+                  borderRadius: BorderRadius.circular(8)),
+              child: Text(_badgeForPoints(pts), style: TextStyle(fontSize: 10,
+                  fontWeight: FontWeight.w700, color: _badgeColor(pts)))),
+          const SizedBox(height: 3),
+          Text("Helped $helped", style: labelText),
+        ]),
+      ]),
+    );
+  }
+
+  // ── Recent activity ────────────────────────────────────────────────────────
   Widget _buildRecentPosts() {
     if (_recentPosts.isEmpty) return const SizedBox.shrink();
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -231,168 +300,188 @@ class _DashboardHomeState extends State<DashboardHome> {
           onTap: () => Navigator.push(context, MaterialPageRoute(
               builder: (_) => CommunityFeedScreen(localUserId: widget.localUserId))),
           child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
-            decoration: BoxDecoration(
-                gradient: kHeroGrad, borderRadius: BorderRadius.circular(20)),
-            child: Text("See all", style: buttonText.copyWith(fontSize: 11)),
-          ),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+              decoration: BoxDecoration(gradient: kHeroGrad,
+                  borderRadius: BorderRadius.circular(20)),
+              child: Text("See all", style: buttonText.copyWith(fontSize: 11))),
         ),
       ]),
-      const SizedBox(height: 12),
-      ..._recentPosts.map((post) => _buildRecentPostTile(post)),
+      const SizedBox(height: 10),
+      ..._recentPosts.map((p) => _recentPostTile(p)),
     ]);
   }
 
-  Widget _buildRecentPostTile(Map<String, dynamic> post) {
-    final isHelpReq = post['postType'] == 'Help Request';
-    final isOpen    = post['status']   == 'Open';
+  Widget _recentPostTile(Map<String, dynamic> post) {
+    final isHelp   = post['postType'] == 'Help Request';
+    final isOpen   = post['status']   == 'Open';
+    final isBoosted = (post['isBoosted'] as int? ?? 0) == 1;
+    final urgency  = post['urgencyLevel'] as String? ?? 'Low';
+    final urgencyColor = urgency == 'High' ? kBlush
+        : urgency == 'Medium' ? kAmber : kMint;
+
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: isBoosted ? kAmber.withOpacity(0.08) : Colors.white,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: kBorderGlass, width: 1),
+        border: Border.all(
+            color: isBoosted ? kAmber.withOpacity(0.40) : kBorderGlass),
         boxShadow: [BoxShadow(color: kViolet.withOpacity(0.06),
             blurRadius: 8, offset: const Offset(0, 3))],
       ),
       child: Row(children: [
-        Container(
-          width: 36, height: 36,
-          decoration: BoxDecoration(
-            color: (isHelpReq ? kSky : kMint).withOpacity(0.15),
-            borderRadius: BorderRadius.circular(10),
-          ),
-          child: Icon(isHelpReq ? Icons.help_outline_rounded
-              : Icons.lightbulb_outline_rounded,
-              color: isHelpReq ? kSky : kMint, size: 18),
-        ),
-        const SizedBox(width: 12),
-        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(post['title'] ?? 'Untitled',
-              maxLines: 1, overflow: TextOverflow.ellipsis,
-              style: GoogleFonts.poppins(fontWeight: FontWeight.w600,
-                  color: kInk, fontSize: 13)),
-          Text(post['userFullName'] ?? '',
-              style: labelText.copyWith(fontSize: 11)),
-        ])),
+        Container(width: 36, height: 36,
+            decoration: BoxDecoration(
+                color: (isHelp ? kSky : kMint).withOpacity(0.15),
+                borderRadius: BorderRadius.circular(10)),
+            child: Icon(isHelp ? Icons.help_outline_rounded
+                : Icons.lightbulb_outline_rounded,
+                color: isHelp ? kSky : kMint, size: 18)),
+        const SizedBox(width: 10),
+        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(children: [
+                if (isBoosted) ...[
+                  const Icon(Icons.rocket_launch_rounded,
+                      color: kAmber, size: 11),
+                  const SizedBox(width: 3),
+                ],
+                Expanded(child: Text(post['title'] ?? 'Untitled',
+                    maxLines: 1, overflow: TextOverflow.ellipsis,
+                    style: GoogleFonts.poppins(fontWeight: FontWeight.w600,
+                        color: kInk, fontSize: 12.5))),
+              ]),
+              Text(post['userFullName'] ?? '',
+                  style: labelText.copyWith(fontSize: 10.5)),
+            ])),
         const SizedBox(width: 8),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-          decoration: BoxDecoration(
-            color: isOpen ? kBlush.withOpacity(0.10) : kMint.withOpacity(0.10),
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: Text(post['status'] ?? '',
-              style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
-                  color: isOpen ? const Color(0xFF9D174D) : const Color(0xFF065F46))),
-        ),
+        Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+          // Urgency badge
+          Container(
+              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+              decoration: BoxDecoration(
+                  color: urgencyColor.withOpacity(0.12),
+                  borderRadius: BorderRadius.circular(7)),
+              child: Text(urgency, style: TextStyle(fontSize: 9.5,
+                  fontWeight: FontWeight.w700, color: urgencyColor))),
+          const SizedBox(height: 3),
+          Container(
+              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+              decoration: BoxDecoration(
+                  color: isOpen ? kBlush.withOpacity(0.10) : kMint.withOpacity(0.10),
+                  borderRadius: BorderRadius.circular(7)),
+              child: Text(post['status'] ?? '', style: TextStyle(
+                  fontSize: 9.5, fontWeight: FontWeight.w700,
+                  color: isOpen ? const Color(0xFF9D174D)
+                      : const Color(0xFF065F46)))),
+        ]),
       ]),
     );
   }
 
-  // ── Posts by Category ─────────────────────────────────────────────────────
-  Widget _buildCategoryPosts() {
+  // ── Leaderboard ────────────────────────────────────────────────────────────
+  Widget _buildLeaderboard() {
+    if (_topHelpers.isEmpty) return const SizedBox.shrink();
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Text("Browse by Category", style: headingLG),
+      Row(children: [
+        Text("Top Campus Helpers", style: headingLG),
+        const SizedBox(width: 8),
+        const Text("🏆", style: TextStyle(fontSize: 18)),
+      ]),
       const SizedBox(height: 12),
-      ..._categoryPosts.entries.map((entry) {
-        final cat   = entry.key;
-        final posts = entry.value;
-        return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          // Category header
-          Row(children: [
-            Container(
-              width: 8, height: 8,
-              decoration: BoxDecoration(
-                  color: _catColor(cat), shape: BoxShape.circle),
-            ),
-            const SizedBox(width: 8),
-            Text(cat, style: GoogleFonts.poppins(
-                fontWeight: FontWeight.w700, fontSize: 14, color: kInk)),
-            const SizedBox(width: 6),
-            Text("(${posts.length})", style: labelText),
-          ]),
-          const SizedBox(height: 8),
-          posts.isEmpty
-              ? Padding(
-            padding: const EdgeInsets.only(bottom: 14, left: 16),
-            child: Text("No posts in this category.", style: labelText),
-          )
-              : Column(children: List.generate(posts.length, (i) {
-            final post = posts[i];
-            return GestureDetector(
-              onTap: () => Navigator.push(context, MaterialPageRoute(
-                  builder: (_) => CommunityFeedScreen(
-                      localUserId: widget.localUserId))),
-              child: Container(
-                margin: const EdgeInsets.only(bottom: 8),
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: kBorderGlass, width: 1),
-                ),
+      Container(
+        decoration: BoxDecoration(
+            color: Colors.white, borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: kBorderGlass),
+            boxShadow: [BoxShadow(color: kViolet.withOpacity(0.06),
+                blurRadius: 12, offset: const Offset(0, 4))]),
+        child: Column(
+          children: List.generate(_topHelpers.length, (i) {
+            final u       = _topHelpers[i];
+            final pts     = (u['points']    as int? ?? 0);
+            final helped  = (u['helpCount'] as int? ?? 0);
+            final streak  = (u['streak']    as int? ?? 0);
+            final initial = (u['fullName']  as String? ?? '?')[0].toUpperCase();
+            final isTop3  = i < 3;
+            final rankColors = [
+              const Color(0xFFFFD700),
+              const Color(0xFFC0C0C0),
+              const Color(0xFFCD7F32),
+            ];
+            return Column(children: [
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                 child: Row(children: [
-                  CircleAvatar(
-                    radius: 14,
-                    backgroundColor: _catColor(cat).withOpacity(0.15),
-                    child: Text("${i + 1}",
-                        style: TextStyle(color: _catColor(cat),
-                            fontWeight: FontWeight.w700, fontSize: 12)),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(child: Text(post["title"] ?? "Untitled",
-                      style: GoogleFonts.poppins(
-                          fontWeight: FontWeight.w600, color: kInk, fontSize: 13))),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                    decoration: BoxDecoration(
-                      color: _catColor(cat).withOpacity(0.10),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Text(post["postType"] ?? "",
-                        style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600,
-                            color: _catColor(cat))),
-                  ),
+                  // Rank
+                  SizedBox(width: 28,
+                      child: isTop3
+                          ? Text(['🥇','🥈','🥉'][i],
+                          style: const TextStyle(fontSize: 18))
+                          : Text('${i + 1}', style: TextStyle(
+                          fontSize: 13, fontWeight: FontWeight.w700,
+                          color: kInkLight))),
+                  const SizedBox(width: 8),
+                  // Avatar
+                  Container(width: 36, height: 36,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        gradient: LinearGradient(
+                          colors: isTop3
+                              ? [rankColors[i].withOpacity(0.8), rankColors[i]]
+                              : [kViolet, kVioletLight],
+                          begin: Alignment.topLeft, end: Alignment.bottomRight,
+                        ),
+                      ),
+                      child: Center(child: Text(initial, style: const TextStyle(
+                          color: Colors.white, fontWeight: FontWeight.w800,
+                          fontSize: 14)))),
+                  const SizedBox(width: 10),
+                  // Name + badge
+                  Expanded(child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Text(u['fullName'] ?? '', style: GoogleFonts.poppins(
+                        fontWeight: FontWeight.w700, color: kInk, fontSize: 13)),
+                    Row(children: [
+                      Text(_badgeForPoints(pts), style: TextStyle(fontSize: 10,
+                          color: _badgeColor(pts))),
+                      if (streak > 0) ...[
+                        const SizedBox(width: 6),
+                        Text('🔥 $streak day streak',
+                            style: const TextStyle(fontSize: 10, color: kBlush)),
+                      ],
+                    ]),
+                  ])),
+                  // Points
+                  Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+                    Text('$pts pts', style: GoogleFonts.poppins(
+                        fontWeight: FontWeight.w800, color: kInkMid,
+                        fontSize: 14)),
+                    Text('Helped $helped', style: labelText),
+                  ]),
                 ]),
               ),
-            );
-          })),
-          const SizedBox(height: 8),
-        ]);
-      }),
+              if (i < _topHelpers.length - 1)
+                Divider(height: 1, color: kBorderGlass.withOpacity(0.60)),
+            ]);
+          }),
+        ),
+      ),
     ]);
   }
 
-  Color _catColor(String cat) {
-    switch (cat) {
-      case 'Academic':    return kSky;
-      case 'Design':      return kBlush;
-      case 'Programming': return kMint;
-      default:            return kViolet;
-    }
-  }
 
-
-
-  Widget _actionBtn({
-    required IconData icon,
-    required String label,
-    required VoidCallback onTap,
-  }) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 18),
-        decoration: BoxDecoration(
-            gradient: kHeroGrad, borderRadius: BorderRadius.circular(18)),
-        child: Column(children: [
-          Icon(icon, color: Colors.white, size: 24),
-          const SizedBox(height: 8),
-          Text(label, style: buttonText),
-        ]),
-      ),
-    );
-  }
+  Widget _actionBtn({required IconData icon, required String label,
+    required VoidCallback onTap}) =>
+      GestureDetector(onTap: onTap,
+          child: Container(
+            padding: const EdgeInsets.symmetric(vertical: 18),
+            decoration: BoxDecoration(gradient: kHeroGrad,
+                borderRadius: BorderRadius.circular(18)),
+            child: Column(children: [
+              Icon(icon, color: Colors.white, size: 24),
+              const SizedBox(height: 8),
+              Text(label, style: buttonText),
+            ]),
+          ));
 }

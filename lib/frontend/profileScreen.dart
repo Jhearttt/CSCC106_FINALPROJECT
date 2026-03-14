@@ -5,7 +5,6 @@ import 'package:final_project/GoogleServices/auth_service.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
-// ─── Aurora Palette ───────────────────────────────────────────────────────────
 const _kInk         = Color(0xFF1E1B4B);
 const _kInkMid      = Color(0xFF4338CA);
 const _kInkLight    = Color(0xFF818CF8);
@@ -18,6 +17,7 @@ const _kBlushSoft   = Color(0xFFFCE7F3);
 const _kMint        = Color(0xFF34D399);
 const _kSky         = Color(0xFF60A5FA);
 const _kSkySoft     = Color(0xFFDBEAFE);
+const _kAmber       = Color(0xFFFCD34D);
 const _kBorderGlass = Color(0xFFE0D9FF);
 
 class _AuroraMeshPainter extends CustomPainter {
@@ -26,8 +26,8 @@ class _AuroraMeshPainter extends CustomPainter {
     void orb(Offset c, double r, Color color, double opacity) {
       canvas.drawCircle(c, r, Paint()
         ..shader = RadialGradient(
-          colors: [color.withOpacity(opacity), color.withOpacity(0)],
-        ).createShader(Rect.fromCircle(center: c, radius: r)));
+            colors: [color.withOpacity(opacity), color.withOpacity(0)])
+            .createShader(Rect.fromCircle(center: c, radius: r)));
     }
     orb(Offset(size.width * 0.10, size.height * 0.05), size.width * 0.52, _kViolet, 0.18);
     orb(Offset(size.width * 0.90, size.height * 0.12), size.width * 0.40, const Color(0xFFC084FC), 0.15);
@@ -51,94 +51,148 @@ class _DotGridPainter extends CustomPainter {
   bool shouldRepaint(covariant CustomPainter _) => false;
 }
 
-// ─── Profile Screen ───────────────────────────────────────────────────────────
-// [embeddedMode] = true  → used as a bottom nav tab inside HomePage (no back button)
-// [embeddedMode] = false → pushed as a standalone screen (shows back button)
+// Badge label based on points
+String _badgeLabel(int pts) {
+  if (pts >= 500) return '🏆 Legend';
+  if (pts >= 200) return '💎 Expert';
+  if (pts >= 100) return '⭐ Helper';
+  if (pts >= 40)  return '🌱 Rising Star';
+  return '🆕 Newcomer';
+}
+
+Color _badgeColor(int pts) {
+  if (pts >= 500) return const Color(0xFFFFD700);
+  if (pts >= 200) return const Color(0xFF60A5FA);
+  if (pts >= 100) return _kVioletLight;
+  if (pts >= 40)  return _kMint;
+  return _kInkMuted;
+}
+
+// Skill card category colors
+Color _catColor(String cat) {
+  switch (cat) {
+    case 'Programming': return _kMint;
+    case 'Design':      return _kBlush;
+    case 'Academic':    return _kSky;
+    default:            return _kViolet;
+  }
+}
+
+IconData _catIcon(String cat) {
+  switch (cat) {
+    case 'Programming': return Icons.code_rounded;
+    case 'Design':      return Icons.palette_rounded;
+    case 'Academic':    return Icons.school_rounded;
+    default:            return Icons.category_rounded;
+  }
+}
+
+// ── Profile Screen ────────────────────────────────────────────────────────────
 class ProfileScreen extends StatefulWidget {
   final int? localUserId;
   final bool embeddedMode;
-
-  const ProfileScreen({
-    super.key,
-    this.localUserId,
-    this.embeddedMode = false,
-  });
+  const ProfileScreen({super.key, this.localUserId, this.embeddedMode = false});
 
   @override
   State<ProfileScreen> createState() => _ProfileScreenState();
 }
 
-class _ProfileScreenState extends State<ProfileScreen> {
+class _ProfileScreenState extends State<ProfileScreen>
+    with SingleTickerProviderStateMixin {
   final User? _firebaseUser = FirebaseAuth.instance.currentUser;
-  Map<String, dynamic>? _localUser;
-  List<Map<String, dynamic>> _myPosts = [];
+  Map<String, dynamic>?        _localUser;
+  List<Map<String, dynamic>>   _myPosts    = [];
+  List<Map<String, dynamic>>   _skillCards = [];
   bool _loading = true;
+
+  late TabController _tabCtrl;
+
+  void _goToCreatePost({Map<String, dynamic>? existingPost}) {
+    Navigator.of(context).push(PageRouteBuilder(
+      pageBuilder: (_, anim, __) => CreatePostScreen(
+        localUserId: widget.localUserId!,
+        existingPost: existingPost,
+      ),
+      transitionsBuilder: (_, anim, __, child) => SlideTransition(
+        position: Tween<Offset>(begin: const Offset(0, 1), end: Offset.zero)
+            .animate(CurvedAnimation(parent: anim, curve: Curves.easeOutCubic)),
+        child: FadeTransition(opacity: anim, child: child),
+      ),
+      transitionDuration: const Duration(milliseconds: 380),
+    )).then((_) => _loadData());
+  }
+
+
 
   @override
   void initState() {
     super.initState();
+    _tabCtrl = TabController(length: 2, vsync: this);
     _loadData();
   }
 
+  @override
+  void dispose() { _tabCtrl.dispose(); super.dispose(); }
+
   Future<void> _loadData() async {
     if (widget.localUserId != null) {
-      _localUser = await DatabaseHelper().getUserById(widget.localUserId!);
-      _myPosts   = await DatabaseHelper().getPostsByUser(widget.localUserId!);
+      final db = DatabaseHelper();
+      _localUser  = await db.getUserById(widget.localUserId!);
+      _myPosts    = await db.getPostsByUser(widget.localUserId!);
+      _skillCards = await db.getSkillCards(widget.localUserId!);
     }
     if (mounted) setState(() => _loading = false);
   }
 
-  // ── Display helpers ───────────────────────────────────────────────────────
-  String get _displayName =>
+  String get _displayName  =>
       _firebaseUser?.displayName ?? _localUser?['fullName'] ?? 'Guest User';
   String get _displayEmail =>
       _firebaseUser?.email ?? _localUser?['email'] ?? 'Local Account';
-  String? get _photoUrl =>
+  String? get _photoUrl    =>
       _firebaseUser?.photoURL ?? _localUser?['profilePic'];
-  String get _initials =>
+  String get _initials     =>
       _displayName.isNotEmpty ? _displayName[0].toUpperCase() : '?';
+  int get _points          => (_localUser?['points']    as int? ?? 0);
+  int get _helpCount       => (_localUser?['helpCount'] as int? ?? 0);
+  int get _streak          => (_localUser?['streak']    as int? ?? 0);
 
   String _timeAgo(String dateStr) {
     try {
       final dt   = DateTime.parse(dateStr);
       final diff = DateTime.now().difference(dt);
       if (diff.inMinutes < 1) return 'Just now';
-      if (diff.inHours < 1)   return '${diff.inMinutes}m ago';
-      if (diff.inDays < 1)    return '${diff.inHours}h ago';
-      if (diff.inDays < 7)    return '${diff.inDays}d ago';
+      if (diff.inHours  < 1) return '${diff.inMinutes}m ago';
+      if (diff.inDays   < 1) return '${diff.inHours}h ago';
+      if (diff.inDays   < 7) return '${diff.inDays}d ago';
       return '${dt.day}/${dt.month}/${dt.year}';
     } catch (_) { return ''; }
   }
 
   @override
   Widget build(BuildContext context) {
-    // When embedded in HomePage's bottom nav, don't wrap in Scaffold
-    // (HomePage already provides the Scaffold). Use a plain Stack instead.
     final body = Stack(children: [
-      Container(decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          colors: [Color(0xFFF0EEFF), Color(0xFFF5F0FF),
-            Color(0xFFFFF0FA), Color(0xFFEEFBF5)],
-          begin: Alignment.topCenter, end: Alignment.bottomCenter,
-          stops: [0.0, 0.35, 0.68, 1.0],
-        ),
-      )),
+      Container(decoration: const BoxDecoration(gradient: LinearGradient(
+        colors: [Color(0xFFF0EEFF), Color(0xFFF5F0FF),
+          Color(0xFFFFF0FA), Color(0xFFEEFBF5)],
+        begin: Alignment.topCenter, end: Alignment.bottomCenter,
+        stops: [0.0, 0.35, 0.68, 1.0],
+      ))),
       CustomPaint(painter: _AuroraMeshPainter(), child: const SizedBox.expand()),
-      IgnorePointer(child: CustomPaint(
-          painter: _DotGridPainter(), child: const SizedBox.expand())),
+      IgnorePointer(child: CustomPaint(painter: _DotGridPainter(),
+          child: const SizedBox.expand())),
 
-      SafeArea(
-        child: _loading
-            ? const Center(child: CircularProgressIndicator(color: _kViolet))
-            : Column(children: [
-          // ── Top bar ──
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
-            child: Row(children: [
-              if (!widget.embeddedMode) ...[
-                GestureDetector(
-                  onTap: () => Navigator.of(context).pop(),
-                  child: Container(
+      SafeArea(child: _loading
+          ? const Center(child: CircularProgressIndicator(color: _kViolet))
+          : Column(children: [
+
+        // ── Top bar ──
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
+          child: Row(children: [
+            if (!widget.embeddedMode) ...[
+              GestureDetector(
+                onTap: () => Navigator.of(context).pop(),
+                child: Container(
                     width: 42, height: 42,
                     decoration: BoxDecoration(
                       color: Colors.white.withOpacity(0.75),
@@ -148,218 +202,359 @@ class _ProfileScreenState extends State<ProfileScreen> {
                           blurRadius: 8, offset: const Offset(0, 3))],
                     ),
                     child: const Icon(Icons.arrow_back_ios_new_rounded,
-                        color: _kViolet, size: 17),
-                  ),
-                ),
-                const SizedBox(width: 14),
-              ],
-              const Text("My Profile",
-                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900,
-                      color: _kInk, letterSpacing: -0.4)),
-            ]),
-          ),
-
-          // ── Profile hero card ──
-          Container(
-            margin: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-            padding: const EdgeInsets.all(22),
-            decoration: BoxDecoration(
-              gradient: const LinearGradient(
-                colors: [Color(0xFF7B6CF6), Color(0xFFA78BFA), Color(0xFFEC4899)],
-                begin: Alignment.topLeft, end: Alignment.bottomRight,
+                        color: _kViolet, size: 17)),
               ),
-              borderRadius: BorderRadius.circular(28),
-              boxShadow: [
-                BoxShadow(color: _kViolet.withOpacity(0.30),
-                    blurRadius: 24, offset: const Offset(0, 8)),
-                BoxShadow(color: _kBlush.withOpacity(0.15),
-                    blurRadius: 14, offset: const Offset(0, 4)),
-              ],
-            ),
-            child: Row(children: [
+              const SizedBox(width: 14),
+            ],
+            const Text("My Profile", style: TextStyle(fontSize: 20,
+                fontWeight: FontWeight.w900, color: _kInk, letterSpacing: -0.4)),
+          ]),
+        ),
+
+        // ── Hero card ──
+        Container(
+          margin: const EdgeInsets.fromLTRB(16, 14, 16, 0),
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+                colors: [Color(0xFF7B6CF6), Color(0xFFA78BFA), Color(0xFFEC4899)],
+                begin: Alignment.topLeft, end: Alignment.bottomRight),
+            borderRadius: BorderRadius.circular(26),
+            boxShadow: [
+              BoxShadow(color: _kViolet.withOpacity(0.28),
+                  blurRadius: 22, offset: const Offset(0, 8)),
+              BoxShadow(color: _kBlush.withOpacity(0.14),
+                  blurRadius: 12, offset: const Offset(0, 4)),
+            ],
+          ),
+          child: Column(children: [
+            Row(children: [
               // Avatar
               Container(
-                width: 66, height: 66,
+                width: 62, height: 62,
                 decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(20),
+                  borderRadius: BorderRadius.circular(18),
                   border: Border.all(color: Colors.white, width: 2.5),
                   color: Colors.white.withOpacity(0.20),
-                  image: _photoUrl != null
-                      ? DecorationImage(
-                      image: NetworkImage(_photoUrl!), fit: BoxFit.cover)
-                      : null,
+                  image: _photoUrl != null ? DecorationImage(
+                      image: NetworkImage(_photoUrl!), fit: BoxFit.cover) : null,
                 ),
                 child: _photoUrl == null
                     ? Center(child: Text(_initials, style: const TextStyle(
-                    color: Colors.white, fontSize: 26, fontWeight: FontWeight.w900)))
-                    : null,
+                    color: Colors.white, fontSize: 24,
+                    fontWeight: FontWeight.w900))) : null,
               ),
-              const SizedBox(width: 16),
-              Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    // Profile picture, user name, email (SRS requirements)
-                    Text(_displayName, style: const TextStyle(fontSize: 17,
-                        fontWeight: FontWeight.w900, color: Colors.white,
-                        letterSpacing: -0.3)),
-                    const SizedBox(height: 3),
-                    Text(_displayEmail, style: TextStyle(fontSize: 12,
-                        color: Colors.white.withOpacity(0.70))),
-                    const SizedBox(height: 10),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
-                      decoration: BoxDecoration(
-                        color: Colors.white.withOpacity(0.22),
-                        borderRadius: BorderRadius.circular(20),
-                        border: Border.all(color: Colors.white.withOpacity(0.35), width: 1),
-                      ),
-                      child: Text(
-                          '${_myPosts.length} post${_myPosts.length != 1 ? 's' : ''}',
-                          style: const TextStyle(fontSize: 11, color: Colors.white,
-                              fontWeight: FontWeight.w700)),
+              const SizedBox(width: 14),
+              Expanded(child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(_displayName, style: const TextStyle(fontSize: 16,
+                    fontWeight: FontWeight.w900, color: Colors.white,
+                    letterSpacing: -0.3)),
+                const SizedBox(height: 2),
+                Text(_displayEmail, style: TextStyle(fontSize: 11.5,
+                    color: Colors.white.withOpacity(0.70))),
+                const SizedBox(height: 8),
+                // Badge
+                Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: _badgeColor(_points).withOpacity(0.20),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(
+                          color: _badgeColor(_points).withOpacity(0.50)),
                     ),
-                  ])),
+                    child: Text(_badgeLabel(_points), style: TextStyle(
+                        fontSize: 11, fontWeight: FontWeight.w700,
+                        color: _badgeColor(_points)))),
+              ])),
             ]),
-          ),
 
-          Container(
-            height: 2.5, margin: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(4),
-              gradient: const LinearGradient(
-                colors: [_kViolet, _kVioletLight, Color(0xFFEC4899)],
-                begin: Alignment.centerLeft, end: Alignment.centerRight,
+            const SizedBox(height: 16),
+
+            // ── Reputation stats row ──
+            Row(children: [
+              _reputationStat('⭐', '$_points', 'Points'),
+              _divider(),
+              _reputationStat('🤝', '$_helpCount', 'Helped'),
+              _divider(),
+              _reputationStat('🔥', '$_streak', 'Day Streak'),
+              _divider(),
+              _reputationStat('📝', '${_myPosts.length}', 'Posts'),
+            ]),
+          ]),
+        ),
+
+        const SizedBox(height: 14),
+
+        // ── Tab bar: My Posts | Skill Cards ──
+        Container(
+          margin: const EdgeInsets.symmetric(horizontal: 16),
+          decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.70),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: _kBorderGlass)),
+          child: TabBar(
+            controller: _tabCtrl,
+            labelColor: Colors.white,
+            unselectedLabelColor: _kInkLight,
+            labelStyle: const TextStyle(fontWeight: FontWeight.w700,
+                fontSize: 13),
+            indicator: BoxDecoration(
+                gradient: const LinearGradient(
+                    colors: [_kViolet, _kVioletLight],
+                    begin: Alignment.topLeft, end: Alignment.bottomRight),
+                borderRadius: BorderRadius.circular(12)),
+            indicatorSize: TabBarIndicatorSize.tab,
+            dividerColor: Colors.transparent,
+            tabs: const [
+              Tab(text: "My Posts"),
+              Tab(text: "Skill Cards"),
+            ],
+          ),
+        ),
+
+        const SizedBox(height: 4),
+
+        // ── Tab content ──
+        Expanded(child: TabBarView(
+          controller: _tabCtrl,
+          children: [
+            _buildPostsTab(),
+            _buildSkillCardsTab(),
+          ],
+        )),
+
+
+      ])),
+    ]);
+
+    return widget.embeddedMode ? body : Scaffold(body: body);
+  }
+
+  Widget _reputationStat(String emoji, String value, String label) {
+    return Expanded(child: Column(children: [
+      Text(emoji, style: const TextStyle(fontSize: 16)),
+      const SizedBox(height: 3),
+      Text(value, style: const TextStyle(color: Colors.white,
+          fontWeight: FontWeight.w800, fontSize: 15)),
+      Text(label, style: TextStyle(color: Colors.white.withOpacity(0.70),
+          fontSize: 10.5, fontWeight: FontWeight.w500)),
+    ]));
+  }
+
+  Widget _divider() => Container(width: 1, height: 36,
+      color: Colors.white.withOpacity(0.25));
+
+  // ── Posts tab ──────────────────────────────────────────────────────────────
+  Widget _buildPostsTab() {
+    return Stack(
+      children: [
+        // Posts list
+        _myPosts.isEmpty
+            ? Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.post_add_rounded,
+                    color: _kInkMuted, size: 50),
+                const SizedBox(height: 10),
+                const Text("No posts yet",
+                    style: TextStyle(
+                        color: _kInkLight,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600)),
+              ],
+            ))
+            : ListView.builder(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
+          itemCount: _myPosts.length,
+          itemBuilder: (_, i) => _buildPostCard(_myPosts[i]),
+        ),
+
+        // Circular plus button at bottom-right
+        Positioned(
+          bottom: 20,
+          right: 20,
+          child: GestureDetector(
+            onTap: _goToCreatePost,
+            child: TweenAnimationBuilder<double>(
+              tween: Tween(begin: 0, end: 1),
+              duration: const Duration(milliseconds: 600),
+              curve: Curves.elasticOut,
+              builder: (_, v, child) => Transform.scale(scale: v, child: child),
+              child: Container(
+                width: 58,
+                height: 58,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  gradient: const LinearGradient(
+                      colors: [_kViolet, _kVioletLight, Color(0xFFEC4899)],
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight),
+                  boxShadow: [
+                    BoxShadow(
+                        color: _kViolet.withOpacity(0.40),
+                        blurRadius: 18,
+                        offset: const Offset(0, 7)),
+                    BoxShadow(
+                        color: _kBlush.withOpacity(0.20),
+                        blurRadius: 12,
+                        offset: const Offset(0, 4)),
+                  ],
+                ),
+                child: const Icon(Icons.add_rounded, color: Colors.white, size: 28),
               ),
             ),
           ),
+        ),
+      ],
+    );
+  }
 
-          // ── My posts header ──
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 14, 16, 10),
-            child: Row(children: [
-              const Text("My Posts",
-                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800,
-                      color: _kInk, letterSpacing: -0.3)),
-              const Spacer(),
-              GestureDetector(
-                onTap: () => Navigator.of(context).push(MaterialPageRoute(
-                    builder: (_) => CreatePostScreen(
-                        localUserId: widget.localUserId)))
-                    .then((_) => _loadData()),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
-                  decoration: BoxDecoration(
-                    gradient: const LinearGradient(
-                        colors: [_kViolet, _kVioletLight],
-                        begin: Alignment.topLeft, end: Alignment.bottomRight),
-                    borderRadius: BorderRadius.circular(14),
-                    boxShadow: [BoxShadow(color: _kViolet.withOpacity(0.32),
-                        blurRadius: 10, offset: const Offset(0, 4))],
-                  ),
-                  child: const Row(mainAxisSize: MainAxisSize.min, children: [
-                    Icon(Icons.add_rounded, color: Colors.white, size: 15),
-                    SizedBox(width: 5),
-                    Text("New Post", style: TextStyle(color: Colors.white,
-                        fontWeight: FontWeight.w700, fontSize: 12.5)),
-                  ]),
+
+  Widget _buildPostCard(Map<String, dynamic> post) {
+    final isOpen    = post['status']   == 'Open';
+    final urgency   = post['urgencyLevel'] as String? ?? 'Low';
+    final isBoosted = (post['isBoosted'] as int? ?? 0) == 1;
+    final urgencyColor = urgency == 'High' ? _kBlush
+        : urgency == 'Medium' ? _kAmber : _kMint;
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.82),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(
+            color: isBoosted ? _kAmber.withOpacity(0.40) : _kBorderGlass,
+            width: 1.2),
+        boxShadow: [BoxShadow(color: _kViolet.withOpacity(0.07),
+            blurRadius: 12, offset: const Offset(0, 4))],
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Expanded(child: Text(post['title'] ?? '', style: const TextStyle(
+              fontWeight: FontWeight.w800, fontSize: 13.5, color: _kInk))),
+          const SizedBox(width: 8),
+          // Urgency badge
+          Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                  color: urgencyColor.withOpacity(0.12),
+                  borderRadius: BorderRadius.circular(8)),
+              child: Text(urgency, style: TextStyle(fontSize: 9.5,
+                  fontWeight: FontWeight.w700, color: urgencyColor))),
+          const SizedBox(width: 6),
+          // Status badge
+          Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                  gradient: isOpen
+                      ? const LinearGradient(
+                      colors: [Color(0xFFFCE7F3), Color(0xFFFBCFE8)])
+                      : const LinearGradient(
+                      colors: [Color(0xFFD1FAE5), Color(0xFFA7F3D0)]),
+                  borderRadius: BorderRadius.circular(8)),
+              child: Text(post['status'] ?? '', style: TextStyle(
+                  fontSize: 9.5, fontWeight: FontWeight.w800,
+                  color: isOpen ? const Color(0xFF9D174D)
+                      : const Color(0xFF065F46)))),
+        ]),
+        const SizedBox(height: 5),
+        Text((post['description'] ?? '').length > 80
+            ? '${(post['description'] as String).substring(0, 80)}...'
+            : post['description'] ?? '',
+            style: const TextStyle(fontSize: 12.5,
+                color: _kInkLight, height: 1.4)),
+        const SizedBox(height: 8),
+        Row(children: [
+          _chip(post['postType'], _kVioletSoft, _kVioletLight),
+          const SizedBox(width: 6),
+          _chip(post['category'], _kSkySoft, _kSky),
+          if (isBoosted) ...[
+            const SizedBox(width: 6),
+            _chip('🚀 Boosted', _kAmber.withOpacity(0.12), _kAmber),
+          ],
+          const Spacer(),
+          Text(_timeAgo(post['datePosted'] ?? ''),
+              style: const TextStyle(fontSize: 10.5, color: _kInkMuted)),
+        ]),
+      ]),
+    );
+  }
+
+  Widget _chip(String label, Color bg, Color fg) => Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(8)),
+      child: Text(label, style: TextStyle(fontSize: 10,
+          fontWeight: FontWeight.w700, color: fg)));
+
+  // ── Skill Cards tab ────────────────────────────────────────────────────────
+  Widget _buildSkillCardsTab() {
+    if (_skillCards.isEmpty) {
+      return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.auto_awesome_rounded, color: _kInkMuted, size: 50),
+            const SizedBox(height: 12),
+            const Text("No skill cards yet", style: TextStyle(color: _kInkLight,
+                fontSize: 14, fontWeight: FontWeight.w600)),
+            const SizedBox(height: 6),
+            const Text("Reply to posts to earn skill points",
+                style: TextStyle(color: _kInkMuted, fontSize: 12.5)),
+          ]));
+    }
+    return GridView.builder(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: 2, crossAxisSpacing: 12,
+          mainAxisSpacing: 12, childAspectRatio: 1.15),
+      itemCount: _skillCards.length,
+      itemBuilder: (_, i) => _buildSkillCard(_skillCards[i]),
+    );
+  }
+
+  Widget _buildSkillCard(Map<String, dynamic> card) {
+    final cat    = card['skillCategory'] as String? ?? 'Others';
+    final pts    = (card['skillPoints']  as int? ?? 0);
+    final color  = _catColor(cat);
+    final icon   = _catIcon(cat);
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: color.withOpacity(0.25), width: 1.5),
+        boxShadow: [BoxShadow(color: color.withOpacity(0.12),
+            blurRadius: 14, offset: const Offset(0, 5))],
+      ),
+      padding: const EdgeInsets.all(16),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+            Container(width: 42, height: 42,
+                decoration: BoxDecoration(color: color.withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(12)),
+                child: Icon(icon, color: color, size: 22)),
+            Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(cat, style: TextStyle(fontWeight: FontWeight.w800,
+                  fontSize: 13, color: _kInk)),
+              const SizedBox(height: 4),
+              Row(children: [
+                const Text("⭐ ", style: TextStyle(fontSize: 11)),
+                Text("$pts points", style: TextStyle(fontSize: 11.5,
+                    fontWeight: FontWeight.w700, color: color)),
+              ]),
+              const SizedBox(height: 6),
+              // Points progress bar (max 200)
+              ClipRRect(
+                borderRadius: BorderRadius.circular(4),
+                child: LinearProgressIndicator(
+                  value: (pts / 200).clamp(0.0, 1.0),
+                  backgroundColor: color.withOpacity(0.10),
+                  valueColor: AlwaysStoppedAnimation<Color>(color),
+                  minHeight: 5,
                 ),
               ),
             ]),
-          ),
-
-          // ── User's posts list (SRS: "List of user posts") ──
-          Expanded(
-            child: _myPosts.isEmpty
-                ? Center(child: Column(mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(Icons.post_add_rounded, color: _kInkMuted, size: 52),
-                  const SizedBox(height: 10),
-                  const Text("No posts yet",
-                      style: TextStyle(color: _kInkLight, fontSize: 14,
-                          fontWeight: FontWeight.w600)),
-                ]))
-                : ListView.builder(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
-                itemCount: _myPosts.length,
-                itemBuilder: (context, index) {
-                  final post   = _myPosts[index];
-                  final isOpen = post['status'] == 'Open';
-                  return Container(
-                    margin: const EdgeInsets.only(bottom: 10),
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.82),
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(color: _kBorderGlass, width: 1.2),
-                      boxShadow: [BoxShadow(color: _kViolet.withOpacity(0.08),
-                          blurRadius: 14, offset: const Offset(0, 5))],
-                    ),
-                    child: Column(crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(children: [
-                            Expanded(child: Text(post['title'] ?? '',
-                                style: const TextStyle(fontWeight: FontWeight.w800,
-                                    fontSize: 14, color: _kInk))),
-                            Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
-                              decoration: BoxDecoration(
-                                gradient: isOpen
-                                    ? const LinearGradient(
-                                    colors: [Color(0xFFFCE7F3), Color(0xFFFBCFE8)])
-                                    : const LinearGradient(
-                                    colors: [Color(0xFFD1FAE5), Color(0xFFA7F3D0)]),
-                                borderRadius: BorderRadius.circular(10),
-                                border: Border.all(
-                                    color: isOpen
-                                        ? _kBlush.withOpacity(0.40)
-                                        : _kMint.withOpacity(0.40),
-                                    width: 1),
-                              ),
-                              child: Text(post['status'],
-                                  style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800,
-                                      color: isOpen
-                                          ? const Color(0xFF9D174D)
-                                          : const Color(0xFF065F46))),
-                            ),
-                          ]),
-                          const SizedBox(height: 5),
-                          Text(
-                              (post['description'] ?? '').length > 80
-                                  ? '${(post['description'] as String).substring(0, 80)}...'
-                                  : post['description'] ?? '',
-                              style: const TextStyle(fontSize: 12.5,
-                                  color: _kInkLight, height: 1.4)),
-                          const SizedBox(height: 10),
-                          Row(children: [
-                            _chip(post['postType'], _kVioletSoft, _kVioletLight),
-                            const SizedBox(width: 6),
-                            _chip(post['category'], _kSkySoft, _kSky),
-                            const Spacer(),
-                            Text(_timeAgo(post['datePosted'] ?? ''),
-                                style: const TextStyle(fontSize: 11, color: _kInkMuted)),
-                          ]),
-                        ]),
-                  );
-                }),
-          ),
-
-          // ── Logout button (SRS: "Logout option") ──
-
-        ]),
-      ),
-    ]);
-
-    // Embedded mode: no extra Scaffold wrapping (parent HomePage provides it)
-    if (widget.embeddedMode) return body;
-
-    return Scaffold(body: body);
-  }
-
-  Widget _chip(String label, Color bg, Color fg) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
-      decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(9)),
-      child: Text(label, style: TextStyle(fontSize: 10.5,
-          fontWeight: FontWeight.w700, color: fg)),
+          ]),
     );
   }
 }

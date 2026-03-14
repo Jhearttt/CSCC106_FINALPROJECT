@@ -36,13 +36,16 @@ dependencies:
   cupertino_icons: ^1.0.8
   awesome_dialog: ^3.3.0
   sqflite: ^2.4.2
-  firebase_core: ^4.4.0
-  firebase_auth: ^6.1.4
-  cloud_firestore: ^6.1.2
-  firebase_database: ^12.0.0
   google_sign_in: ^7.2.0
   google_fonts: ^6.1.0
   connectivity_plus: ^5.0.2
+
+    # ── Firebase SDK — all pinned to the same BoM-compatible set ──────────────
+  firebase_core: ^3.12.1
+  firebase_auth: ^5.5.1
+  cloud_firestore: ^5.6.5
+  firebase_database: ^11.3.4
+
 
 dev_dependencies:
   flutter_test:

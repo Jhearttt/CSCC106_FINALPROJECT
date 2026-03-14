@@ -152,6 +152,8 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
 
   Future<void> _loadPosts() async {
     setState(() => _loading = true);
+    // Auto-boost expired unresolved posts
+    await DatabaseHelper().checkAndBoostExpiredPosts();
     await SyncService.instance.pullPostsFromFirestore();
     await _queryLocal();
     if (mounted) setState(() => _loading = false);
@@ -223,6 +225,21 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
   void _toggleStatus(int postId, String current) async {
     final next = current == 'Open' ? 'Resolved' : 'Open';
     await SyncService.instance.updatePostStatus(postId, next);
+    // Award reputation points to the most recent commenter when post is resolved
+    if (next == 'Resolved') {
+      final comments = await DatabaseHelper().getCommentsByPost(postId);
+      if (comments.isNotEmpty) {
+        final lastHelper = comments.last['userId'] as int?;
+        // Find post category to update skill card
+        final posts = await DatabaseHelper().getAllPosts();
+        final post  = posts.firstWhere((p) => p['id'] == postId,
+            orElse: () => {});
+        final category = post['category'] as String? ?? 'Others';
+        if (lastHelper != null) {
+          await DatabaseHelper().addPoints(lastHelper, 10, category);
+        }
+      }
+    }
     _queryLocal();
   }
 
@@ -518,6 +535,56 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
     ]);
   }
 
+  // ── Full screen image viewer ──────────────────────────────────────────────
+  void _openFullScreenImage(BuildContext context, String imageUrl) {
+    Navigator.of(context).push(PageRouteBuilder(
+      opaque: false,
+      barrierColor: Colors.black87,
+      pageBuilder: (_, anim, __) => FadeTransition(
+        opacity: anim,
+        child: Scaffold(
+          backgroundColor: Colors.transparent,
+          body: Stack(children: [
+            // Dismiss on tap outside
+            GestureDetector(
+              onTap: () => Navigator.of(context).pop(),
+              child: Container(color: Colors.black87),
+            ),
+            // Pinch-to-zoom image
+            Center(child: InteractiveViewer(
+              minScale: 0.5, maxScale: 4.0,
+              child: Image.network(
+                imageUrl,
+                fit: BoxFit.contain,
+                loadingBuilder: (_, child, progress) => progress == null
+                    ? child
+                    : const Center(child: CircularProgressIndicator(
+                    color: Colors.white)),
+              ),
+            )),
+            // Close button
+            Positioned(top: 48, right: 16,
+              child: GestureDetector(
+                onTap: () => Navigator.of(context).pop(),
+                child: Container(
+                  width: 38, height: 38,
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.15),
+                    shape: BoxShape.circle,
+                    border: Border.all(
+                        color: Colors.white.withOpacity(0.30), width: 1),
+                  ),
+                  child: const Icon(Icons.close_rounded,
+                      color: Colors.white, size: 20),
+                ),
+              ),
+            ),
+          ]),
+        ),
+      ),
+    ));
+  }
+
   Widget _buildEmptyState() {
     return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center,
         children: [
@@ -572,13 +639,22 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
         post['userId'] == widget.localUserId;
     final initials  = (post['userFullName'] as String? ?? '?').isNotEmpty
         ? (post['userFullName'] as String)[0].toUpperCase() : '?';
+    final urgency   = post['urgencyLevel'] as String? ?? 'Low';
+    final isBoosted = (post['isBoosted'] as int? ?? 0) == 1;
+    final urgencyColor = urgency == 'High'   ? _kBlush
+        : urgency == 'Medium' ? const Color(0xFFFCD34D) : _kMint;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.82),
+        color: isBoosted
+            ? const Color(0xFFFFFBEB).withOpacity(0.95)
+            : Colors.white.withOpacity(0.82),
         borderRadius: BorderRadius.circular(22),
-        border: Border.all(color: _kBorderGlass, width: 1.2),
+        border: Border.all(
+            color: isBoosted
+                ? const Color(0xFFFCD34D).withOpacity(0.50) : _kBorderGlass,
+            width: isBoosted ? 1.8 : 1.2),
         boxShadow: [
           BoxShadow(color: _kViolet.withOpacity(0.08),
               blurRadius: 18, offset: const Offset(0, 6)),
@@ -604,36 +680,53 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
             const SizedBox(width: 10),
             Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(post['userFullName'] ?? 'Unknown', style: const TextStyle(
-                      fontWeight: FontWeight.w700, fontSize: 13.5, color: _kInk)),
+                  Row(children: [
+                    if (isBoosted) ...[
+                      const Text('🚀 ', style: TextStyle(fontSize: 11)),
+                    ],
+                    Flexible(child: Text(post['userFullName'] ?? 'Unknown',
+                        style: const TextStyle(fontWeight: FontWeight.w700,
+                            fontSize: 13.5, color: _kInk))),
+                  ]),
                   Text(_timeAgo(post['datePosted'] ?? ''),
                       style: const TextStyle(fontSize: 11, color: _kInkMuted)),
                 ])),
+            // Urgency badge (only show Medium/High)
+            if (urgency != 'Low') ...[
+              Container(
+                  margin: const EdgeInsets.only(right: 6),
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                      color: urgencyColor.withOpacity(0.12),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(
+                          color: urgencyColor.withOpacity(0.40), width: 1)),
+                  child: Text(urgency, style: TextStyle(fontSize: 10,
+                      fontWeight: FontWeight.w800, color: urgencyColor))),
+            ],
+            // Status badge
             GestureDetector(
               onTap: isOwner
                   ? () => _toggleStatus(post['id'], post['status']) : null,
               child: AnimatedContainer(
-                duration: const Duration(milliseconds: 300),
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                decoration: BoxDecoration(
-                  gradient: isOpen
-                      ? const LinearGradient(
-                      colors: [Color(0xFFFCE7F3), Color(0xFFFBCFE8)])
-                      : const LinearGradient(
-                      colors: [Color(0xFFD1FAE5), Color(0xFFA7F3D0)]),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(
-                      color: isOpen
-                          ? _kBlush.withOpacity(0.40)
-                          : _kMint.withOpacity(0.40),
-                      width: 1),
-                ),
-                child: Text(post['status'], style: TextStyle(fontSize: 10.5,
-                    fontWeight: FontWeight.w800,
-                    color: isOpen
-                        ? const Color(0xFF9D174D)
-                        : const Color(0xFF065F46))),
-              ),
+                  duration: const Duration(milliseconds: 300),
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                  decoration: BoxDecoration(
+                    gradient: isOpen
+                        ? const LinearGradient(
+                        colors: [Color(0xFFFCE7F3), Color(0xFFFBCFE8)])
+                        : const LinearGradient(
+                        colors: [Color(0xFFD1FAE5), Color(0xFFA7F3D0)]),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                        color: isOpen
+                            ? _kBlush.withOpacity(0.40)
+                            : _kMint.withOpacity(0.40), width: 1),
+                  ),
+                  child: Text(post['status'], style: TextStyle(fontSize: 10.5,
+                      fontWeight: FontWeight.w800,
+                      color: isOpen ? const Color(0xFF9D174D)
+                          : const Color(0xFF065F46)))),
             ),
           ]),
           const SizedBox(height: 10),
@@ -647,14 +740,57 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
                 : post['description'] ?? '',
             style: const TextStyle(fontSize: 13, color: _kInkLight, height: 1.45),
           ),
+          // Post image
+          if ((post['imageUrl'] as String?) != null &&
+              (post['imageUrl'] as String).isNotEmpty) ...[
+            const SizedBox(height: 10),
+            GestureDetector(
+              onTap: () => _openFullScreenImage(context, post['imageUrl'] as String),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(14),
+                child: Stack(children: [
+                  Image.network(post['imageUrl'] as String,
+                    width: double.infinity, height: 180, fit: BoxFit.cover,
+                    loadingBuilder: (_, child, p) => p == null ? child
+                        : Container(width: double.infinity, height: 180,
+                        decoration: BoxDecoration(color: _kVioletSoft,
+                            borderRadius: BorderRadius.circular(14)),
+                        child: Center(child: CircularProgressIndicator(
+                            color: _kViolet,
+                            value: p.expectedTotalBytes != null
+                                ? p.cumulativeBytesLoaded /
+                                p.expectedTotalBytes! : null))),
+                    errorBuilder: (_, __, ___) => Container(height: 60,
+                        decoration: BoxDecoration(color: _kVioletSoft,
+                            borderRadius: BorderRadius.circular(14)),
+                        child: const Center(child: Icon(
+                            Icons.broken_image_outlined, color: _kVioletLight))),
+                  ),
+                  Positioned(bottom: 8, right: 8,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                          color: Colors.black.withOpacity(0.45),
+                          borderRadius: BorderRadius.circular(8)),
+                      child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                        Icon(Icons.fullscreen_rounded, color: Colors.white, size: 14),
+                        SizedBox(width: 3),
+                        Text("View", style: TextStyle(color: Colors.white,
+                            fontSize: 10, fontWeight: FontWeight.w600)),
+                      ]),
+                    ),
+                  ),
+                ]),
+              ),
+            ),
+          ],
           const SizedBox(height: 10),
           Row(children: [
-            _chip(isHelpReq
-                ? Icons.help_outline_rounded
+            _chip(isHelpReq ? Icons.help_outline_rounded
                 : Icons.lightbulb_outline_rounded,
                 post['postType'],
                 isHelpReq ? _kSkySoft : _kMintSoft,
-                isHelpReq ? _kSky     : _kMint),
+                isHelpReq ? _kSky : _kMint),
             const SizedBox(width: 6),
             _chip(Icons.label_outline_rounded, post['category'],
                 _kVioletSoft, _kVioletLight),
@@ -682,14 +818,12 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
             const Spacer(),
             if (isOwner) ...[
               GestureDetector(
-                onTap: () => _goToCreate(existingPost: post),
-                child: _iconBtn(Icons.edit_rounded, _kSkySoft, _kSky),
-              ),
+                  onTap: () => _goToCreate(existingPost: post),
+                  child: _iconBtn(Icons.edit_rounded, _kSkySoft, _kSky)),
               const SizedBox(width: 6),
               GestureDetector(
-                onTap: () => _deletePost(post['id']),
-                child: _iconBtn(Icons.delete_rounded, _kBlushSoft, _kBlush),
-              ),
+                  onTap: () => _deletePost(post['id']),
+                  child: _iconBtn(Icons.delete_rounded, _kBlushSoft, _kBlush)),
             ],
           ]),
         ]),

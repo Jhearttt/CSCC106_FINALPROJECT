@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:developer' as developer;
+import 'dart:io';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_storage/firebase_storage.dart';
 import 'package:final_project/backend/databaseHelper.dart';
 import 'package:final_project/services/connectivityService.dart';
 import 'package:sqflite/sqflite.dart';
@@ -52,10 +54,36 @@ class SyncService {
   void dispose() => _connectivitySub?.cancel();
 
   // ══════════════════════════════════════════════════════════════════════════
+  //  IMAGE UPLOAD
+  // ══════════════════════════════════════════════════════════════════════════
+
+  /// Upload a local image file to Firebase Storage.
+  /// Returns the public download URL, or null if upload fails / offline.
+  Future<String?> uploadPostImage({
+    required int    userId,
+    required String localPath,
+  }) async {
+    if (!ConnectivityService.instance.isOnline) return null;
+    try {
+      final file      = File(localPath);
+      final fileName  = 'post_${userId}_${DateTime.now().millisecondsSinceEpoch}.jpg';
+      final ref       = FirebaseStorage.instance.ref('post_images/$fileName');
+      await ref.putFile(file);
+      final url = await ref.getDownloadURL();
+      developer.log('Image uploaded: $url', name: 'SyncService');
+      return url;
+    } catch (e) {
+      developer.log('Image upload failed: $e', name: 'SyncService');
+      return null;
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
   //  POSTS — write
   // ══════════════════════════════════════════════════════════════════════════
 
   /// Insert a new post. Call this instead of DatabaseHelper.insertPost().
+  /// Pass [imageLocalPath] to upload the image to Storage before saving.
   /// Returns the local SQLite row id.
   Future<int> savePost({
     required int    userId,
@@ -65,70 +93,68 @@ class SyncService {
     required String description,
     required String postType,
     required String category,
-    String status = 'Open',
+    String  status         = 'Open',
+    String  urgencyLevel   = 'Low',
+    String? imageLocalPath,
   }) async {
-    // Always write locally first
+    String? imageUrl;
+    if (imageLocalPath != null) {
+      imageUrl = await uploadPostImage(userId: userId, localPath: imageLocalPath);
+    }
     final localId = await _db.insertPost(
-      userId:      userId,
-      title:       title,
-      description: description,
-      postType:    postType,
-      category:    category,
-      status:      status,
+      userId: userId, title: title, description: description,
+      postType: postType, category: category, status: status,
+      urgencyLevel: urgencyLevel, imageUrl: imageUrl,
     );
     if (localId <= 0) return localId;
-
     if (ConnectivityService.instance.isOnline) {
       try {
         await _firestore.collection(_kPosts).doc(localId.toString()).set({
-          'localId':      localId,
-          'userId':       userId,
-          'userFullName': userFullName,
-          'userUserName': userUserName,
-          'title':        title,
-          'description':  description,
-          'postType':     postType,
-          'category':     category,
-          'status':       status,
-          'datePosted':   FieldValue.serverTimestamp(),
+          'localId': localId, 'userId': userId,
+          'userFullName': userFullName, 'userUserName': userUserName,
+          'title': title, 'description': description,
+          'postType': postType, 'category': category,
+          'status': status, 'urgencyLevel': urgencyLevel,
+          'imageUrl': imageUrl, 'isBoosted': 0,
+          'datePosted': FieldValue.serverTimestamp(),
         });
         await _db.markPostSynced(localId);
         developer.log('Post $localId saved to Firestore', name: 'SyncService');
       } catch (e) {
-        developer.log('Firestore write failed: $e — queued for retry',
-            name: 'SyncService');
+        developer.log('Firestore write failed: $e', name: 'SyncService');
       }
     }
     return localId;
   }
 
-  /// Update a post. Call this instead of DatabaseHelper.updatePost().
   Future<int> updatePost({
     required int    postId,
+    required int    userId,
     required String title,
     required String description,
     required String postType,
     required String category,
     required String status,
+    String  urgencyLevel     = 'Low',
+    String? imageLocalPath,
+    String? existingImageUrl,
   }) async {
+    String? imageUrl = existingImageUrl;
+    if (imageLocalPath != null) {
+      imageUrl = await uploadPostImage(userId: userId, localPath: imageLocalPath);
+    }
     final result = await _db.updatePost(
-      postId:      postId,
-      title:       title,
-      description: description,
-      postType:    postType,
-      category:    category,
-      status:      status,
+      postId: postId, title: title, description: description,
+      postType: postType, category: category, status: status,
+      urgencyLevel: urgencyLevel, imageUrl: imageUrl,
     );
-
     if (ConnectivityService.instance.isOnline) {
       try {
         await _firestore.collection(_kPosts).doc(postId.toString()).update({
-          'title':       title,
-          'description': description,
-          'postType':    postType,
-          'category':    category,
-          'status':      status,
-          'updatedAt':   FieldValue.serverTimestamp(),
+          'title': title, 'description': description,
+          'postType': postType, 'category': category,
+          'status': status, 'urgencyLevel': urgencyLevel,
+          'imageUrl': imageUrl, 'updatedAt': FieldValue.serverTimestamp(),
         });
         await _db.markPostSynced(postId);
       } catch (e) {
