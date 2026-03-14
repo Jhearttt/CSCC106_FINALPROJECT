@@ -1,0 +1,446 @@
+import 'dart:async';
+import 'dart:developer' as developer;
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:final_project/backend/databaseHelper.dart';
+import 'package:final_project/services/connectivityService.dart';
+import 'package:sqflite/sqflite.dart';
+
+// ─── Firestore Collection Names ───────────────────────────────────────────────
+const _kPosts    = 'posts';
+const _kComments = 'comments';
+
+/// Singleton that keeps SQLite ↔ Firestore in sync.
+///
+/// WRITE FLOW:
+///   Online  → SQLite first, then Firestore immediately.
+///   Offline → SQLite only (synced = 0). Queued for retry on reconnect.
+///
+/// READ FLOW:
+///   Feed refresh → pull Firestore docs → upsert into SQLite
+///   → DatabaseHelper queries return the merged result.
+///
+/// SETUP — call once in main.dart after Firebase.initializeApp():
+///   await SyncService.instance.init();
+class SyncService {
+  SyncService._();
+  static final SyncService instance = SyncService._();
+
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final DatabaseHelper    _db        = DatabaseHelper();
+
+  StreamSubscription? _connectivitySub;
+
+  // ── Init ──────────────────────────────────────────────────────────────────
+  Future<void> init() async {
+    await ConnectivityService.instance.init();
+
+    // Auto-flush when connectivity is restored
+    _connectivitySub =
+        ConnectivityService.instance.onStatusChange.listen((online) async {
+          if (online) {
+            developer.log('Back online — flushing offline queue', name: 'SyncService');
+            await flushOfflineQueue();
+          }
+        });
+
+    // Flush anything left from a previous offline session
+    if (ConnectivityService.instance.isOnline) {
+      await flushOfflineQueue();
+    }
+  }
+
+  void dispose() => _connectivitySub?.cancel();
+
+  // ══════════════════════════════════════════════════════════════════════════
+  //  POSTS — write
+  // ══════════════════════════════════════════════════════════════════════════
+
+  /// Insert a new post. Call this instead of DatabaseHelper.insertPost().
+  /// Returns the local SQLite row id.
+  Future<int> savePost({
+    required int    userId,
+    required String userFullName,
+    required String userUserName,
+    required String title,
+    required String description,
+    required String postType,
+    required String category,
+    String status = 'Open',
+  }) async {
+    // Always write locally first
+    final localId = await _db.insertPost(
+      userId:      userId,
+      title:       title,
+      description: description,
+      postType:    postType,
+      category:    category,
+      status:      status,
+    );
+    if (localId <= 0) return localId;
+
+    if (ConnectivityService.instance.isOnline) {
+      try {
+        await _firestore.collection(_kPosts).doc(localId.toString()).set({
+          'localId':      localId,
+          'userId':       userId,
+          'userFullName': userFullName,
+          'userUserName': userUserName,
+          'title':        title,
+          'description':  description,
+          'postType':     postType,
+          'category':     category,
+          'status':       status,
+          'datePosted':   FieldValue.serverTimestamp(),
+        });
+        await _db.markPostSynced(localId);
+        developer.log('Post $localId saved to Firestore', name: 'SyncService');
+      } catch (e) {
+        developer.log('Firestore write failed: $e — queued for retry',
+            name: 'SyncService');
+      }
+    }
+    return localId;
+  }
+
+  /// Update a post. Call this instead of DatabaseHelper.updatePost().
+  Future<int> updatePost({
+    required int    postId,
+    required String title,
+    required String description,
+    required String postType,
+    required String category,
+    required String status,
+  }) async {
+    final result = await _db.updatePost(
+      postId:      postId,
+      title:       title,
+      description: description,
+      postType:    postType,
+      category:    category,
+      status:      status,
+    );
+
+    if (ConnectivityService.instance.isOnline) {
+      try {
+        await _firestore.collection(_kPosts).doc(postId.toString()).update({
+          'title':       title,
+          'description': description,
+          'postType':    postType,
+          'category':    category,
+          'status':      status,
+          'updatedAt':   FieldValue.serverTimestamp(),
+        });
+        await _db.markPostSynced(postId);
+      } catch (e) {
+        developer.log('Firestore update failed: $e', name: 'SyncService');
+      }
+    }
+    return result;
+  }
+
+  /// Toggle post status Open ↔ Resolved.
+  Future<int> updatePostStatus(int postId, String status) async {
+    final result = await _db.updatePostStatus(postId, status);
+
+    if (ConnectivityService.instance.isOnline) {
+      try {
+        await _firestore.collection(_kPosts).doc(postId.toString()).update({
+          'status':    status,
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+        await _db.markPostSynced(postId);
+      } catch (e) {
+        developer.log('Firestore status update failed: $e', name: 'SyncService');
+      }
+    }
+    return result;
+  }
+
+  /// Delete a post (and its Firestore comments).
+  Future<int> deletePost(int postId) async {
+    final result = await _db.deletePost(postId);
+
+    if (ConnectivityService.instance.isOnline) {
+      try {
+        await _firestore.collection(_kPosts).doc(postId.toString()).delete();
+        final batch = _firestore.batch();
+        final comments = await _firestore
+            .collection(_kComments)
+            .where('postId', isEqualTo: postId)
+            .get();
+        for (final doc in comments.docs) batch.delete(doc.reference);
+        await batch.commit();
+      } catch (e) {
+        developer.log('Firestore delete failed: $e', name: 'SyncService');
+      }
+    }
+    return result;
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  //  COMMENTS — write
+  // ══════════════════════════════════════════════════════════════════════════
+
+  /// Insert a new comment. Call this instead of DatabaseHelper.insertComment().
+  Future<int> saveComment({
+    required int    postId,
+    required int    userId,
+    required String userFullName,
+    required String comment,
+  }) async {
+    final localId = await _db.insertComment(
+      postId:  postId,
+      userId:  userId,
+      comment: comment,
+    );
+    if (localId <= 0) return localId;
+
+    if (ConnectivityService.instance.isOnline) {
+      try {
+        await _firestore.collection(_kComments).doc(localId.toString()).set({
+          'localId':       localId,
+          'postId':        postId,
+          'userId':        userId,
+          'userFullName':  userFullName,
+          'comment':       comment,
+          'dateCommented': FieldValue.serverTimestamp(),
+        });
+        await _db.markCommentSynced(localId);
+        developer.log('Comment $localId saved to Firestore', name: 'SyncService');
+      } catch (e) {
+        developer.log('Firestore comment write failed: $e', name: 'SyncService');
+      }
+    }
+    return localId;
+  }
+
+  /// Delete a comment from both stores.
+  Future<int> deleteComment(int commentId) async {
+    final result = await _db.deleteComment(commentId);
+
+    if (ConnectivityService.instance.isOnline) {
+      try {
+        await _firestore
+            .collection(_kComments)
+            .doc(commentId.toString())
+            .delete();
+      } catch (e) {
+        developer.log('Firestore comment delete failed: $e', name: 'SyncService');
+      }
+    }
+    return result;
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  //  OFFLINE QUEUE FLUSH
+  // ══════════════════════════════════════════════════════════════════════════
+
+  /// Push all unsynced local rows to Firestore.
+  /// Runs automatically on reconnect and at startup.
+  Future<void> flushOfflineQueue() async {
+    if (!ConnectivityService.instance.isOnline) return;
+    await _flushPosts();
+    await _flushComments();
+  }
+
+  Future<void> _flushPosts() async {
+    final rows = await _db.getUnsyncedPosts();
+    if (rows.isEmpty) return;
+    developer.log('Flushing ${rows.length} post(s)', name: 'SyncService');
+
+    for (final post in rows) {
+      try {
+        final ref = _firestore.collection(_kPosts).doc(post['id'].toString());
+        final exists = (await ref.get()).exists;
+        if (exists) {
+          await ref.update({
+            'title':       post['title'],
+            'description': post['description'],
+            'postType':    post['postType'],
+            'category':    post['category'],
+            'status':      post['status'],
+            'updatedAt':   FieldValue.serverTimestamp(),
+          });
+        } else {
+          await ref.set({
+            'localId':     post['id'],
+            'userId':      post['userId'],
+            'title':       post['title'],
+            'description': post['description'],
+            'postType':    post['postType'],
+            'category':    post['category'],
+            'status':      post['status'],
+            'datePosted':  FieldValue.serverTimestamp(),
+          });
+        }
+        await _db.markPostSynced(post['id'] as int);
+      } catch (e) {
+        developer.log('Flush failed for post ${post['id']}: $e',
+            name: 'SyncService');
+      }
+    }
+  }
+
+  Future<void> _flushComments() async {
+    final rows = await _db.getUnsyncedComments();
+    if (rows.isEmpty) return;
+    developer.log('Flushing ${rows.length} comment(s)', name: 'SyncService');
+
+    for (final comment in rows) {
+      try {
+        final ref =
+        _firestore.collection(_kComments).doc(comment['id'].toString());
+        final exists = (await ref.get()).exists;
+        if (exists) {
+          await ref.update({
+            'comment':   comment['comment'],
+            'updatedAt': FieldValue.serverTimestamp(),
+          });
+        } else {
+          await ref.set({
+            'localId':       comment['id'],
+            'postId':        comment['postId'],
+            'userId':        comment['userId'],
+            'comment':       comment['comment'],
+            'dateCommented': FieldValue.serverTimestamp(),
+          });
+        }
+        await _db.markCommentSynced(comment['id'] as int);
+      } catch (e) {
+        developer.log('Flush failed for comment ${comment['id']}: $e',
+            name: 'SyncService');
+      }
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  //  PULL FIRESTORE → LOCAL SQLITE
+  // ══════════════════════════════════════════════════════════════════════════
+
+  /// Pull all posts from Firestore → upsert into SQLite.
+  /// Call on community feed refresh so users see posts from all devices.
+  Future<void> pullPostsFromFirestore() async {
+    if (!ConnectivityService.instance.isOnline) return;
+    try {
+      final snapshot = await _firestore
+          .collection(_kPosts)
+          .orderBy('datePosted', descending: true)
+          .get();
+      for (final doc in snapshot.docs) {
+        await _upsertPost(doc.data());
+      }
+      developer.log('Pulled ${snapshot.docs.length} post(s)', name: 'SyncService');
+    } catch (e) {
+      developer.log('Pull failed: $e', name: 'SyncService');
+    }
+  }
+
+  /// Pull comments for a post from Firestore → upsert into SQLite.
+  /// Call when opening the CommentsModal.
+  Future<void> pullCommentsFromFirestore(int postId) async {
+    if (!ConnectivityService.instance.isOnline) return;
+    try {
+      final snapshot = await _firestore
+          .collection(_kComments)
+          .where('postId', isEqualTo: postId)
+          .orderBy('dateCommented', descending: false)
+          .get();
+      for (final doc in snapshot.docs) {
+        await _upsertComment(doc.data());
+      }
+    } catch (e) {
+      developer.log('Comment pull failed for post $postId: $e',
+          name: 'SyncService');
+    }
+  }
+
+  // ── Private upsert helpers ────────────────────────────────────────────────
+
+  Future<void> _upsertPost(Map<String, dynamic> data) async {
+    final localId = data['localId'] as int?;
+    if (localId == null) return;
+
+    final userId   = (data['userId']       as num?)?.toInt() ?? 0;
+    final fullName = data['userFullName']  as String? ?? 'Unknown';
+    final userName = data['userUserName']  as String? ?? 'user_$userId';
+
+    await _ensureUser(userId: userId, fullName: fullName, userName: userName);
+
+    final db = await _db.getDatabase();
+    final exists =
+        (await db.query('posts', where: 'id = ?', whereArgs: [localId])).isNotEmpty;
+
+    final row = {
+      'id':          localId,
+      'userId':      userId,
+      'title':       data['title']       ?? '',
+      'description': data['description'] ?? '',
+      'postType':    data['postType']    ?? 'Help Request',
+      'category':    data['category']   ?? 'Others',
+      'status':      data['status']     ?? 'Open',
+      'synced':      1,
+      'datePosted':  (data['datePosted'] as Timestamp?)
+          ?.toDate().toIso8601String() ??
+          DateTime.now().toIso8601String(),
+    };
+
+    if (exists) {
+      await db.update('posts', row, where: 'id = ?', whereArgs: [localId]);
+    } else {
+      await db.insert('posts', row, conflictAlgorithm: ConflictAlgorithm.ignore);
+    }
+  }
+
+  Future<void> _upsertComment(Map<String, dynamic> data) async {
+    final localId = data['localId'] as int?;
+    if (localId == null) return;
+
+    final userId   = (data['userId']      as num?)?.toInt() ?? 0;
+    final fullName = data['userFullName'] as String? ?? 'Unknown';
+
+    await _ensureUser(userId: userId, fullName: fullName, userName: 'user_$userId');
+
+    final db = await _db.getDatabase();
+    final exists = (await db.query('comments',
+        where: 'id = ?', whereArgs: [localId]))
+        .isNotEmpty;
+
+    final row = {
+      'id':            localId,
+      'postId':        (data['postId'] as num?)?.toInt() ?? 0,
+      'userId':        userId,
+      'comment':       data['comment'] ?? '',
+      'synced':        1,
+      'dateCommented': (data['dateCommented'] as Timestamp?)
+          ?.toDate().toIso8601String() ??
+          DateTime.now().toIso8601String(),
+    };
+
+    if (exists) {
+      await db.update('comments', row, where: 'id = ?', whereArgs: [localId]);
+    } else {
+      await db.insert('comments', row,
+          conflictAlgorithm: ConflictAlgorithm.ignore);
+    }
+  }
+
+  /// Create a stub user row locally for posts/comments from other devices.
+  Future<void> _ensureUser({
+    required int    userId,
+    required String fullName,
+    required String userName,
+  }) async {
+    final db = await _db.getDatabase();
+    final exists = (await db.query('users',
+        where: 'id = ?', whereArgs: [userId]))
+        .isNotEmpty;
+    if (!exists) {
+      await db.insert('users', {
+        'id':       userId,
+        'fullName': fullName,
+        'userName': userName,
+        'password': '',
+      }, conflictAlgorithm: ConflictAlgorithm.ignore);
+    }
+  }
+}

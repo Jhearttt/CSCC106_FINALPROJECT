@@ -1,24 +1,17 @@
-import 'dart:math';
 import 'package:awesome_dialog/awesome_dialog.dart';
 import 'package:final_project/backend/databaseHelper.dart';
+import 'package:final_project/services/syncService.dart';
 import 'package:flutter/material.dart';
 
 // ─── Aurora Palette ───────────────────────────────────────────────────────────
 const _kInk         = Color(0xFF1E1B4B);
 const _kInkMid      = Color(0xFF4338CA);
-const _kInkLight    = Color(0xFF818CF8);
 const _kInkMuted    = Color(0xFFA5B4FC);
 const _kViolet      = Color(0xFF7B6CF6);
 const _kVioletLight = Color(0xFFA78BFA);
-const _kVioletSoft  = Color(0xFFEDE9FE);
 const _kBlush       = Color(0xFFF472B6);
-const _kBlushSoft   = Color(0xFFFCE7F3);
 const _kMint        = Color(0xFF34D399);
-const _kMintSoft    = Color(0xFFD1FAE5);
 const _kSky         = Color(0xFF60A5FA);
-const _kSkySoft     = Color(0xFFDBEAFE);
-const _kAmber       = Color(0xFFFCD34D);
-const _kAmberSoft   = Color(0xFFFEF3C7);
 const _kBorderGlass = Color(0xFFE0D9FF);
 const _kBase        = Color(0xFFF0EEFF);
 
@@ -36,7 +29,6 @@ class _AuroraMeshPainter extends CustomPainter {
     orb(Offset(size.width * 0.85, size.height * 0.88), size.width * 0.38, _kMint, 0.12);
     orb(Offset(size.width * 0.06, size.height * 0.82), size.width * 0.35, _kSky, 0.11);
   }
-
   @override
   bool shouldRepaint(covariant CustomPainter _) => false;
 }
@@ -53,7 +45,6 @@ class CreatePostScreen extends StatefulWidget {
 }
 
 class _CreatePostScreenState extends State<CreatePostScreen> {
-  // ── Original state ──
   final _titleCtrl       = TextEditingController();
   final _descriptionCtrl = TextEditingController();
 
@@ -64,8 +55,11 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
 
   bool get _isEditMode => widget.existingPost != null;
 
+  // SRS: Post Type options
   final _postTypes  = ['Help Request', 'Skill Offer'];
+  // SRS: Category options
   final _categories = ['Programming', 'Academic', 'Design', 'Others'];
+  // SRS: Status options
   final _statuses   = ['Open', 'Resolved'];
 
   @override
@@ -73,7 +67,7 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     super.initState();
     if (_isEditMode) {
       final p = widget.existingPost!;
-      _titleCtrl.text       = p['title'] ?? '';
+      _titleCtrl.text       = p['title']       ?? '';
       _descriptionCtrl.text = p['description'] ?? '';
       _postType = p['postType'] ?? 'Help Request';
       _category = p['category'] ?? 'Others';
@@ -81,38 +75,70 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     }
   }
 
-  // ── Original submit logic ──
+  @override
+  void dispose() {
+    _titleCtrl.dispose();
+    _descriptionCtrl.dispose();
+    super.dispose();
+  }
+
+  // ── Submit: insert or update post ────────────────────────────────────────
+  // SRS: If online → Firestore via SyncService; if offline → local SQLite (synced=0)
   Future<void> _submit() async {
-    if (_titleCtrl.text.trim().isEmpty) { _showError("Title is required."); return; }
-    if (_descriptionCtrl.text.trim().isEmpty) { _showError("Description is required."); return; }
+    if (_titleCtrl.text.trim().isEmpty) {
+      _showError("Title is required."); return;
+    }
+    if (_descriptionCtrl.text.trim().isEmpty) {
+      _showError("Description is required."); return;
+    }
     if (widget.localUserId == null && !_isEditMode) {
       _showError("You must be logged in to create a post."); return;
     }
     setState(() => _isLoading = true);
+
+    // Fetch local user info so SyncService can store it in Firestore
+    final localUser = widget.localUserId != null
+        ? await DatabaseHelper().getUserById(widget.localUserId!)
+        : null;
+    final userFullName = localUser?['fullName'] as String? ?? 'Unknown';
+    final userUserName = localUser?['userName'] as String? ?? 'unknown';
+
     int result;
     if (_isEditMode) {
-      result = await DatabaseHelper().updatePost(
-        postId: widget.existingPost!['id'],
-        title: _titleCtrl.text.trim(), description: _descriptionCtrl.text.trim(),
-        postType: _postType, category: _category, status: _status,
+      result = await SyncService.instance.updatePost(
+        postId:      widget.existingPost!['id'],
+        title:       _titleCtrl.text.trim(),
+        description: _descriptionCtrl.text.trim(),
+        postType:    _postType,
+        category:    _category,
+        status:      _status,
       );
     } else {
-      result = await DatabaseHelper().insertPost(
-        userId: widget.localUserId!, title: _titleCtrl.text.trim(),
-        description: _descriptionCtrl.text.trim(),
-        postType: _postType, category: _category, status: _status,
+      result = await SyncService.instance.savePost(
+        userId:       widget.localUserId!,
+        userFullName: userFullName,
+        userUserName: userUserName,
+        title:        _titleCtrl.text.trim(),
+        description:  _descriptionCtrl.text.trim(),
+        postType:     _postType,
+        category:     _category,
+        status:       _status,
       );
     }
+
     setState(() => _isLoading = false);
+
     if (result > 0) {
-      AwesomeDialog(
-        context: context, dialogType: DialogType.success,
-        title: _isEditMode ? 'Post Updated' : 'Post Created',
-        desc: _isEditMode ? 'Your post has been updated.' : 'Your post has been published.',
-        btnOkOnPress: () => Navigator.of(context).pop(),
-      ).show();
+    AwesomeDialog(
+    context: context, dialogType: DialogType.success,
+    title: _isEditMode ? 'Post Updated' : 'Post Created',
+    desc: _isEditMode
+    ? 'Your post has been updated.'
+        : 'Your post has been published.',
+    btnOkOnPress: () => Navigator.of(context).pop(true),
+    ).show();
     } else {
-      _showError("Something went wrong. Please try again.");
+    _showError("Something went wrong. Please try again.");
     }
   }
 
@@ -125,7 +151,6 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       body: Stack(children: [
-        // Aurora bg
         Container(decoration: const BoxDecoration(
           gradient: LinearGradient(
             colors: [Color(0xFFF0EEFF), Color(0xFFF5F0FF),
@@ -163,12 +188,13 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
                   Text(_isEditMode ? "Edit Post" : "New Post",
                       style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w900,
                           color: _kInk, letterSpacing: -0.5)),
-                  Text(_isEditMode ? "Update your post details" : "Share a question or skill",
+                  Text(_isEditMode
+                      ? "Update your post details"
+                      : "Share a question or skill",
                       style: const TextStyle(fontSize: 12, color: _kInkMuted)),
                 ]),
               ]),
 
-              // Gradient divider
               Container(
                 height: 2.5, margin: const EdgeInsets.symmetric(vertical: 18),
                 decoration: BoxDecoration(
@@ -192,7 +218,7 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
                 padding: const EdgeInsets.all(22),
                 child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
 
-                  // Title
+                  // Title field
                   _fieldLabel("Title"),
                   const SizedBox(height: 7),
                   _buildTextField(controller: _titleCtrl,
@@ -200,7 +226,7 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
                       icon: Icons.title_rounded),
                   const SizedBox(height: 18),
 
-                  // Description
+                  // Description field
                   _fieldLabel("Description"),
                   const SizedBox(height: 7),
                   _buildTextField(controller: _descriptionCtrl,
@@ -208,12 +234,12 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
                       icon: Icons.description_outlined, maxLines: 5),
                   const SizedBox(height: 20),
 
-                  // Post type selector
+                  // Post type selector (SRS: Help Request | Skill Offer)
                   _fieldLabel("Post Type"),
                   const SizedBox(height: 10),
                   Row(children: _postTypes.map((t) {
-                    final active = _postType == t;
-                    final isHelp = t == 'Help Request';
+                    final active  = _postType == t;
+                    final isHelp  = t == 'Help Request';
                     return Expanded(child: Padding(
                       padding: EdgeInsets.only(right: isHelp ? 10 : 0),
                       child: GestureDetector(
@@ -224,25 +250,28 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
                           decoration: BoxDecoration(
                             gradient: active
                                 ? (isHelp
-                                ? const LinearGradient(colors: [_kSky, Color(0xFF3B82F6)],
-                                begin: Alignment.topLeft, end: Alignment.bottomRight)
-                                : const LinearGradient(colors: [Color(0xFF059669), _kMint],
-                                begin: Alignment.topLeft, end: Alignment.bottomRight))
+                                ? const LinearGradient(
+                                colors: [_kSky, Color(0xFF3B82F6)],
+                                begin: Alignment.topLeft,
+                                end: Alignment.bottomRight)
+                                : const LinearGradient(
+                                colors: [Color(0xFF059669), _kMint],
+                                begin: Alignment.topLeft,
+                                end: Alignment.bottomRight))
                                 : null,
                             color: active ? null : Colors.white,
                             borderRadius: BorderRadius.circular(16),
                             border: Border.all(
-                              color: active
-                                  ? (isHelp ? _kSky : _kMint)
-                                  : _kBorderGlass,
-                              width: 1.2,
-                            ),
+                                color: active ? (isHelp ? _kSky : _kMint) : _kBorderGlass,
+                                width: 1.2),
                             boxShadow: active ? [BoxShadow(
                                 color: (isHelp ? _kSky : _kMint).withOpacity(0.30),
                                 blurRadius: 10, offset: const Offset(0, 4))] : [],
                           ),
                           child: Column(children: [
-                            Icon(isHelp ? Icons.help_outline_rounded : Icons.lightbulb_outline_rounded,
+                            Icon(isHelp
+                                ? Icons.help_outline_rounded
+                                : Icons.lightbulb_outline_rounded,
                                 color: active ? Colors.white : _kInkMuted, size: 22),
                             const SizedBox(height: 5),
                             Text(t, style: TextStyle(fontSize: 12,
@@ -256,7 +285,7 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
 
                   const SizedBox(height: 20),
 
-                  // Category selector
+                  // Category selector (SRS: Programming | Academic | Design | Others)
                   _fieldLabel("Category"),
                   const SizedBox(height: 10),
                   Wrap(spacing: 8, runSpacing: 8, children: _categories.map((c) {
@@ -265,16 +294,19 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
                       onTap: () => setState(() => _category = c),
                       child: AnimatedContainer(
                         duration: const Duration(milliseconds: 200),
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 16, vertical: 8),
                         decoration: BoxDecoration(
                           gradient: active ? const LinearGradient(
                               colors: [_kViolet, _kVioletLight],
-                              begin: Alignment.topLeft, end: Alignment.bottomRight) : null,
+                              begin: Alignment.topLeft,
+                              end: Alignment.bottomRight) : null,
                           color: active ? null : Colors.white,
                           borderRadius: BorderRadius.circular(20),
                           border: Border.all(
                               color: active ? _kViolet : _kBorderGlass, width: 1.2),
-                          boxShadow: active ? [BoxShadow(color: _kViolet.withOpacity(0.28),
+                          boxShadow: active ? [BoxShadow(
+                              color: _kViolet.withOpacity(0.28),
                               blurRadius: 8, offset: const Offset(0, 3))] : [],
                         ),
                         child: Text(c, style: TextStyle(fontSize: 12.5,
@@ -286,7 +318,7 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
 
                   const SizedBox(height: 20),
 
-                  // Status selector
+                  // Status selector (SRS: Open | Resolved)
                   _fieldLabel("Status"),
                   const SizedBox(height: 10),
                   Row(children: _statuses.map((s) {
@@ -302,15 +334,20 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
                           decoration: BoxDecoration(
                             gradient: active
                                 ? (isOpen
-                                ? const LinearGradient(colors: [Color(0xFFEC4899), _kBlush],
-                                begin: Alignment.topLeft, end: Alignment.bottomRight)
-                                : const LinearGradient(colors: [Color(0xFF059669), _kMint],
-                                begin: Alignment.topLeft, end: Alignment.bottomRight))
+                                ? const LinearGradient(
+                                colors: [Color(0xFFEC4899), _kBlush],
+                                begin: Alignment.topLeft,
+                                end: Alignment.bottomRight)
+                                : const LinearGradient(
+                                colors: [Color(0xFF059669), _kMint],
+                                begin: Alignment.topLeft,
+                                end: Alignment.bottomRight))
                                 : null,
                             color: active ? null : Colors.white,
                             borderRadius: BorderRadius.circular(14),
                             border: Border.all(
-                                color: active ? (isOpen ? _kBlush : _kMint) : _kBorderGlass,
+                                color: active ? (isOpen ? _kBlush : _kMint)
+                                    : _kBorderGlass,
                                 width: 1.2),
                             boxShadow: active ? [BoxShadow(
                                 color: (isOpen ? _kBlush : _kMint).withOpacity(0.28),
@@ -378,7 +415,7 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
                         borderRadius: BorderRadius.circular(30)),
                   ),
                   child: const Text("CANCEL",
-                      style: TextStyle(color: _kInkLight,
+                      style: TextStyle(color: _kInkMuted,
                           fontWeight: FontWeight.w700, fontSize: 14,
                           letterSpacing: 1.2)),
                 ),

@@ -8,6 +8,9 @@ class DatabaseHelper {
   Database? _db;
 
   // ─── Open / Init DB ──────────────────────────────────────────────────────
+  /// Public accessor for SyncService and other classes that need raw DB access.
+  Future<Database> getDatabase() => _database();
+
   Future<Database> _database() async {
     if (_db != null) return _db!;
 
@@ -17,7 +20,7 @@ class DatabaseHelper {
       '$path/$_dbName',
       version: _dbVersion,
       onCreate: (db, version) async {
-        // ── Users table (replaces students) ────────────────────────────────
+        // ── Users table ────────────────────────────────────────────────────
         await db.execute("""
           CREATE TABLE IF NOT EXISTS users (
             id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -30,7 +33,7 @@ class DatabaseHelper {
           )
         """);
 
-        // ── Posts table (new for CampusAid) ────────────────────────────────
+        // ── Posts table ────────────────────────────────────────────────────
         // postType  : 'Help Request' | 'Skill Offer'
         // category  : 'Programming' | 'Academic' | 'Design' | 'Others'
         // status    : 'Open' | 'Resolved'
@@ -50,7 +53,7 @@ class DatabaseHelper {
           )
         """);
 
-        // ── Comments table (optional, for future use) ───────────────────────
+        // ── Comments table ─────────────────────────────────────────────────
         await db.execute("""
           CREATE TABLE IF NOT EXISTS comments (
             id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -70,7 +73,7 @@ class DatabaseHelper {
   }
 
   // ══════════════════════════════════════════════════════════════════════════
-  //  USER CRUD  (refactored from your existing student methods)
+  //  USER CRUD
   // ══════════════════════════════════════════════════════════════════════════
 
   /// INSERT a new user — returns the new row id, or -1 on failure
@@ -147,7 +150,7 @@ class DatabaseHelper {
   }
 
   // ══════════════════════════════════════════════════════════════════════════
-  //  POST CRUD  (new for CampusAid)
+  //  POST CRUD
   // ══════════════════════════════════════════════════════════════════════════
 
   /// INSERT a new post
@@ -155,8 +158,8 @@ class DatabaseHelper {
     required int userId,
     required String title,
     required String description,
-    required String postType,   // 'Help Request' | 'Skill Offer'
-    required String category,   // 'Programming' | 'Academic' | 'Design' | 'Others'
+    required String postType, // 'Help Request' | 'Skill Offer'
+    required String category, // 'Programming' | 'Academic' | 'Design' | 'Others'
     String status = 'Open',
   }) async {
     final db = await _database();
@@ -180,7 +183,6 @@ class DatabaseHelper {
   }) async {
     final db = await _database();
 
-    // Build WHERE clause dynamically
     final conditions = <String>[];
     final args = <dynamic>[];
 
@@ -210,9 +212,9 @@ class DatabaseHelper {
         p.status,
         p.synced,
         p.datePosted,
-        u.id       AS userId,
-        u.fullName AS userFullName,
-        u.userName AS userUserName,
+        u.id         AS userId,
+        u.fullName   AS userFullName,
+        u.userName   AS userUserName,
         u.profilePic AS userProfilePic
       FROM posts p
       JOIN users u ON p.userId = u.id
@@ -287,7 +289,7 @@ class DatabaseHelper {
   }
 
   // ══════════════════════════════════════════════════════════════════════════
-  //  COMMENT CRUD  (optional — for future use)
+  //  COMMENT CRUD
   // ══════════════════════════════════════════════════════════════════════════
 
   /// INSERT a comment
@@ -312,6 +314,7 @@ class DatabaseHelper {
       SELECT
         c.id,
         c.comment,
+        c.synced,
         c.dateCommented,
         u.id       AS userId,
         u.fullName AS userFullName,
@@ -321,6 +324,20 @@ class DatabaseHelper {
       WHERE c.postId = ?
       ORDER BY c.dateCommented ASC
     """, [postId]);
+  }
+
+  /// UPDATE a comment's text (marks as unsynced)
+  Future<int> updateComment({
+    required int commentId,
+    required String comment,
+  }) async {
+    final db = await _database();
+    return await db.update(
+      'comments',
+      {'comment': comment, 'synced': 0},
+      where: 'id = ?',
+      whereArgs: [commentId],
+    );
   }
 
   /// DELETE a comment
@@ -337,8 +354,7 @@ class DatabaseHelper {
   /// Get all unsynced posts (synced = 0)
   Future<List<Map<String, dynamic>>> getUnsyncedPosts() async {
     final db = await _database();
-    return await db
-        .query('posts', where: 'synced = ?', whereArgs: [0]);
+    return await db.query('posts', where: 'synced = ?', whereArgs: [0]);
   }
 
   /// Mark a post as synced
@@ -352,35 +368,74 @@ class DatabaseHelper {
     );
   }
 
+  /// Get all unsynced comments (synced = 0)
+  Future<List<Map<String, dynamic>>> getUnsyncedComments() async {
+    final db = await _database();
+    return await db.query('comments', where: 'synced = ?', whereArgs: [0]);
+  }
+
+  /// Mark a comment as synced
+  Future<int> markCommentSynced(int commentId) async {
+    final db = await _database();
+    return await db.update(
+      'comments',
+      {'synced': 1},
+      where: 'id = ?',
+      whereArgs: [commentId],
+    );
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  //  DASHBOARD STATS
+  // ══════════════════════════════════════════════════════════════════════════
+
   Future<Map<String, int>> getDashboardStats() async {
     final db = await _database();
 
-    // Total Posts
     final totalPostsResult =
-    await db.rawQuery('SELECT COUNT(*) as count FROM posts');
+    await db.rawQuery("SELECT COUNT(*) as count FROM posts");
 
-    // Open Help Requests
-    final openRequestsResult = await db.rawQuery(
-        "SELECT COUNT(*) as count FROM posts WHERE category = 'Help Request'");
+    final helpRequestsResult = await db.rawQuery(
+        "SELECT COUNT(*) as count FROM posts WHERE postType = 'Help Request' AND status = 'Open'");
 
-    // Skill Offers
     final skillOffersResult = await db.rawQuery(
-        "SELECT COUNT(*) as count FROM posts WHERE category = 'Skill Offer'");
+        "SELECT COUNT(*) as count FROM posts WHERE postType = 'Skill Offer'");
 
-    // Total Users
-    final totalUsersResult =
-    await db.rawQuery('SELECT COUNT(*) as count FROM users');
-
-    int totalPosts = Sqflite.firstIntValue(totalPostsResult) ?? 0;
-    int openRequests = Sqflite.firstIntValue(openRequestsResult) ?? 0;
-    int skillOffers = Sqflite.firstIntValue(skillOffersResult) ?? 0;
-    int totalUsers = Sqflite.firstIntValue(totalUsersResult) ?? 0;
+    final resolvedResult = await db.rawQuery(
+        "SELECT COUNT(*) as count FROM posts WHERE status = 'Resolved'");
 
     return {
-      'totalPosts': totalPosts,
-      'openRequests': openRequests,
-      'skillOffers': skillOffers,
-      'totalUsers': totalUsers,
+      "totalPosts":    totalPostsResult.first["count"]  as int,
+      "openRequests":  helpRequestsResult.first["count"] as int,
+      "skillOffers":   skillOffersResult.first["count"]  as int,
+      "resolvedPosts": resolvedResult.first["count"]     as int,
     };
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  //  RECENT POSTS
+  // ══════════════════════════════════════════════════════════════════════════
+
+  /// GET recent posts — fixed column name (datePosted, not createdAt)
+  Future<List<Map<String, dynamic>>> getRecentPosts({int limit = 5}) async {
+    final db = await _database();
+    return await db.rawQuery("""
+      SELECT
+        p.id,
+        p.title,
+        p.description,
+        p.postType,
+        p.category,
+        p.status,
+        p.synced,
+        p.datePosted,
+        u.id       AS userId,
+        u.fullName AS userFullName,
+        u.userName AS userUserName
+      FROM posts p
+      JOIN users u ON p.userId = u.id
+      ORDER BY p.datePosted DESC
+      LIMIT ?
+    """, [limit]);
   }
 }
