@@ -666,7 +666,6 @@ class _LoginScreenHomeState extends State<LoginScreenHome>
                                               fontWeight: FontWeight.w800,
                                               fontSize: 13.5)),
                                     ),
-
                                 ]),
                           ),
                           const SizedBox(height: 8),
