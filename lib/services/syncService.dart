@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:developer' as developer;
 import 'dart:io';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_storage/firebase_storage.dart';
 import 'package:final_project/backend/databaseHelper.dart';
 import 'package:final_project/services/connectivityService.dart';
 import 'package:sqflite/sqflite.dart';
@@ -58,25 +57,6 @@ class SyncService {
   // ══════════════════════════════════════════════════════════════════════════
 
   /// Upload a local image file to Firebase Storage.
-  /// Returns the public download URL, or null if upload fails / offline.
-  Future<String?> uploadPostImage({
-    required int    userId,
-    required String localPath,
-  }) async {
-    if (!ConnectivityService.instance.isOnline) return null;
-    try {
-      final file      = File(localPath);
-      final fileName  = 'post_${userId}_${DateTime.now().millisecondsSinceEpoch}.jpg';
-      final ref       = FirebaseStorage.instance.ref('post_images/$fileName');
-      await ref.putFile(file);
-      final url = await ref.getDownloadURL();
-      developer.log('Image uploaded: $url', name: 'SyncService');
-      return url;
-    } catch (e) {
-      developer.log('Image upload failed: $e', name: 'SyncService');
-      return null;
-    }
-  }
 
   // ══════════════════════════════════════════════════════════════════════════
   //  POSTS — write
@@ -98,9 +78,7 @@ class SyncService {
     String? imageLocalPath,
   }) async {
     String? imageUrl;
-    if (imageLocalPath != null) {
-      imageUrl = await uploadPostImage(userId: userId, localPath: imageLocalPath);
-    }
+
     final localId = await _db.insertPost(
       userId: userId, title: title, description: description,
       postType: postType, category: category, status: status,
@@ -140,9 +118,7 @@ class SyncService {
     String? existingImageUrl,
   }) async {
     String? imageUrl = existingImageUrl;
-    if (imageLocalPath != null) {
-      imageUrl = await uploadPostImage(userId: userId, localPath: imageLocalPath);
-    }
+
     final result = await _db.updatePost(
       postId: postId, title: title, description: description,
       postType: postType, category: category, status: status,
@@ -207,29 +183,98 @@ class SyncService {
   //  COMMENTS — write
   // ══════════════════════════════════════════════════════════════════════════
 
-  /// Insert a new comment. Call this instead of DatabaseHelper.insertComment().
+  /// Insert a new comment or reply. Call this instead of DatabaseHelper.insertComment().
+  /// Fires a notification to the post owner (and parent commenter if it's a reply).
   Future<int> saveComment({
     required int    postId,
     required int    userId,
     required String userFullName,
     required String comment,
+    int?            parentCommentId,
   }) async {
     final localId = await _db.insertComment(
-      postId:  postId,
-      userId:  userId,
-      comment: comment,
+      postId:          postId,
+      userId:          userId,
+      comment:         comment,
+      parentCommentId: parentCommentId,
     );
     if (localId <= 0) return localId;
 
+    // ── Notifications ───────────────────────────────────────────────────────
+    // Get the post to find its owner and title
+    final posts = await _db.getAllPosts();
+    final post  = posts.firstWhere((p) => p['id'] == postId, orElse: () => {});
+    if (post.isNotEmpty) {
+      final postOwnerId = post['userId'] as int?;
+      final postTitle   = post['title']  as String? ?? 'a post';
+
+      if (parentCommentId != null) {
+        // It's a REPLY — notify the parent comment's author (if different from replier)
+        final allComments = await _db.getCommentsByPost(postId);
+        // getCommentsByPost returns threaded, flatten to find parent
+        Map<String, dynamic>? parentComment;
+        for (final c in allComments) {
+          if (c['id'] == parentCommentId) { parentComment = c; break; }
+          for (final r in (c['replies'] as List)) {
+            if (r['id'] == parentCommentId) { parentComment = r; break; }
+          }
+          if (parentComment != null) break;
+        }
+        final parentAuthorId = parentComment?['userId'] as int?;
+        if (parentAuthorId != null && parentAuthorId != userId) {
+          await _db.insertNotification(
+            userId:       parentAuthorId,
+            fromUserId:   userId,
+            fromUserName: userFullName,
+            postId:       postId,
+            postTitle:    postTitle,
+            commentId:    localId,
+            type:         'reply',
+            message:      '$userFullName replied to your comment: "$comment"',
+          );
+        }
+        // Also notify the post owner if they're different from the parent author
+        if (postOwnerId != null && postOwnerId != userId &&
+            postOwnerId != parentAuthorId) {
+          await _db.insertNotification(
+            userId:       postOwnerId,
+            fromUserId:   userId,
+            fromUserName: userFullName,
+            postId:       postId,
+            postTitle:    postTitle,
+            commentId:    localId,
+            type:         'reply',
+            message:      '$userFullName also replied on your post: "$comment"',
+          );
+        }
+      } else {
+        // It's a top-level COMMENT — notify the post owner
+        if (postOwnerId != null && postOwnerId != userId) {
+          await _db.insertNotification(
+            userId:       postOwnerId,
+            fromUserId:   userId,
+            fromUserName: userFullName,
+            postId:       postId,
+            postTitle:    postTitle,
+            commentId:    localId,
+            type:         'comment',
+            message:      '$userFullName commented on your post: "$comment"',
+          );
+        }
+      }
+    }
+
+    // ── Firestore sync ──────────────────────────────────────────────────────
     if (ConnectivityService.instance.isOnline) {
       try {
         await _firestore.collection(_kComments).doc(localId.toString()).set({
-          'localId':       localId,
-          'postId':        postId,
-          'userId':        userId,
-          'userFullName':  userFullName,
-          'comment':       comment,
-          'dateCommented': FieldValue.serverTimestamp(),
+          'localId':          localId,
+          'postId':           postId,
+          'userId':           userId,
+          'userFullName':     userFullName,
+          'comment':          comment,
+          'parentCommentId':  parentCommentId,
+          'dateCommented':    FieldValue.serverTimestamp(),
         });
         await _db.markCommentSynced(localId);
         developer.log('Comment $localId saved to Firestore', name: 'SyncService');

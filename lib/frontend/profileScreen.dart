@@ -1,7 +1,10 @@
+import 'package:awesome_dialog/awesome_dialog.dart';
 import 'package:final_project/backend/databaseHelper.dart';
+import 'package:final_project/frontend/communityFeedScreen.dart';
 import 'package:final_project/frontend/createPostScreen.dart';
 import 'package:final_project/frontend/loginScreen.dart';
 import 'package:final_project/GoogleServices/auth_service.dart';
+import 'package:final_project/services/syncService.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
@@ -51,7 +54,6 @@ class _DotGridPainter extends CustomPainter {
   bool shouldRepaint(covariant CustomPainter _) => false;
 }
 
-// Badge label based on points
 String _badgeLabel(int pts) {
   if (pts >= 500) return '🏆 Legend';
   if (pts >= 200) return '💎 Expert';
@@ -68,7 +70,6 @@ Color _badgeColor(int pts) {
   return _kInkMuted;
 }
 
-// Skill card category colors
 Color _catColor(String cat) {
   switch (cat) {
     case 'Programming': return _kMint;
@@ -87,11 +88,19 @@ IconData _catIcon(String cat) {
   }
 }
 
-// ── Profile Screen ────────────────────────────────────────────────────────────
 class ProfileScreen extends StatefulWidget {
-  final int? localUserId;
-  final bool embeddedMode;
-  const ProfileScreen({super.key, this.localUserId, this.embeddedMode = false});
+  final int?  localUserId;
+  final bool  embeddedMode;
+  /// Pass false when viewing someone else's profile (e.g. from post detail).
+  /// Defaults to true so existing tab/home usage is unchanged.
+  final bool  isOwnProfile;
+
+  const ProfileScreen({
+    super.key,
+    this.localUserId,
+    this.embeddedMode = false,
+    this.isOwnProfile = true,
+  });
 
   @override
   State<ProfileScreen> createState() => _ProfileScreenState();
@@ -100,29 +109,12 @@ class ProfileScreen extends StatefulWidget {
 class _ProfileScreenState extends State<ProfileScreen>
     with SingleTickerProviderStateMixin {
   final User? _firebaseUser = FirebaseAuth.instance.currentUser;
-  Map<String, dynamic>?        _localUser;
-  List<Map<String, dynamic>>   _myPosts    = [];
-  List<Map<String, dynamic>>   _skillCards = [];
+  Map<String, dynamic>?      _localUser;
+  List<Map<String, dynamic>> _myPosts    = [];
+  List<Map<String, dynamic>> _skillCards = [];
   bool _loading = true;
 
   late TabController _tabCtrl;
-
-  void _goToCreatePost({Map<String, dynamic>? existingPost}) {
-    Navigator.of(context).push(PageRouteBuilder(
-      pageBuilder: (_, anim, __) => CreatePostScreen(
-        localUserId: widget.localUserId!,
-        existingPost: existingPost,
-      ),
-      transitionsBuilder: (_, anim, __, child) => SlideTransition(
-        position: Tween<Offset>(begin: const Offset(0, 1), end: Offset.zero)
-            .animate(CurvedAnimation(parent: anim, curve: Curves.easeOutCubic)),
-        child: FadeTransition(opacity: anim, child: child),
-      ),
-      transitionDuration: const Duration(milliseconds: 380),
-    )).then((_) => _loadData());
-  }
-
-
 
   @override
   void initState() {
@@ -136,25 +128,52 @@ class _ProfileScreenState extends State<ProfileScreen>
 
   Future<void> _loadData() async {
     if (widget.localUserId != null) {
-      final db = DatabaseHelper();
+      final db  = DatabaseHelper();
       _localUser  = await db.getUserById(widget.localUserId!);
-      _myPosts    = await db.getPostsByUser(widget.localUserId!);
+      final raw   = await db.getPostsByUser(widget.localUserId!);
       _skillCards = await db.getSkillCards(widget.localUserId!);
+
+      // Sort: High urgency first, then Medium, then Low; resolved sink to bottom
+      int _urgencyRank(String u) => u == 'High' ? 0 : u == 'Medium' ? 1 : 2;
+
+      final open = raw.where((p) => p['status'] != 'Resolved').toList()
+        ..sort((a, b) {
+          final uA = _urgencyRank(a['urgencyLevel'] as String? ?? 'Low');
+          final uB = _urgencyRank(b['urgencyLevel'] as String? ?? 'Low');
+          if (uA != uB) return uA.compareTo(uB);
+          return (b['datePosted'] as String? ?? '')
+              .compareTo(a['datePosted'] as String? ?? '');
+        });
+      final resolved = raw.where((p) => p['status'] == 'Resolved').toList()
+        ..sort((a, b) => (b['datePosted'] as String? ?? '')
+            .compareTo(a['datePosted'] as String? ?? ''));
+
+      _myPosts = [...open, ...resolved];
     }
     if (mounted) setState(() => _loading = false);
   }
 
-  String get _displayName  =>
-      _firebaseUser?.displayName ?? _localUser?['fullName'] ?? 'Guest User';
+  // Only use Firebase user data when viewing our OWN profile.
+  // When viewing someone else's profile, always use SQLite _localUser only.
+  String get _displayName =>
+      widget.isOwnProfile
+          ? (_firebaseUser?.displayName ?? _localUser?['fullName'] ?? 'Guest User')
+          : (_localUser?['fullName'] ?? 'Unknown User');
+
   String get _displayEmail =>
-      _firebaseUser?.email ?? _localUser?['email'] ?? 'Local Account';
-  String? get _photoUrl    =>
-      _firebaseUser?.photoURL ?? _localUser?['profilePic'];
+      widget.isOwnProfile
+          ? (_firebaseUser?.email ?? _localUser?['email'] ?? 'Local Account')
+          : (_localUser?['email'] ?? '');
+
+  String? get _photoUrl =>
+      widget.isOwnProfile
+          ? (_firebaseUser?.photoURL ?? _localUser?['profilePic'])
+          : (_localUser?['profilePic'] as String?);
   String get _initials     =>
       _displayName.isNotEmpty ? _displayName[0].toUpperCase() : '?';
-  int get _points          => (_localUser?['points']    as int? ?? 0);
-  int get _helpCount       => (_localUser?['helpCount'] as int? ?? 0);
-  int get _streak          => (_localUser?['streak']    as int? ?? 0);
+  int get _points    => (_localUser?['points']    as int? ?? 0);
+  int get _helpCount => (_localUser?['helpCount'] as int? ?? 0);
+  int get _streak    => (_localUser?['streak']    as int? ?? 0);
 
   String _timeAgo(String dateStr) {
     try {
@@ -166,6 +185,138 @@ class _ProfileScreenState extends State<ProfileScreen>
       if (diff.inDays   < 7) return '${diff.inDays}d ago';
       return '${dt.day}/${dt.month}/${dt.year}';
     } catch (_) { return ''; }
+  }
+
+  // ── Navigate to edit post ─────────────────────────────────────────────────
+  void _goToEdit(Map<String, dynamic> post) {
+    Navigator.of(context).push(PageRouteBuilder(
+      pageBuilder: (_, anim, __) => CreatePostScreen(
+          localUserId: widget.localUserId, existingPost: post),
+      transitionsBuilder: (_, anim, __, child) => SlideTransition(
+        position: Tween<Offset>(begin: const Offset(0, 1), end: Offset.zero)
+            .animate(CurvedAnimation(parent: anim, curve: Curves.easeOutCubic)),
+        child: FadeTransition(opacity: anim, child: child),
+      ),
+      transitionDuration: const Duration(milliseconds: 380),
+    )).then((_) => _loadData());
+  }
+
+  // ── Show three-dot options as centered dialog ────────────────────────────
+  void _showPostOptions(BuildContext context, Map<String, dynamic> post) {
+    showGeneralDialog(
+      context: context,
+      barrierDismissible: true,
+      barrierLabel: 'PostOptions',
+      barrierColor: Colors.black45,
+      transitionDuration: const Duration(milliseconds: 220),
+      transitionBuilder: (_, anim, __, child) {
+        final curve = CurvedAnimation(parent: anim, curve: Curves.easeOutCubic);
+        return ScaleTransition(
+            scale: Tween<double>(begin: 0.85, end: 1.0).animate(curve),
+            child: FadeTransition(opacity: curve, child: child));
+      },
+      pageBuilder: (ctx, _, __) => Dialog(
+        backgroundColor: Colors.transparent,
+        insetPadding: const EdgeInsets.symmetric(horizontal: 40),
+        child: Container(
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(24),
+            boxShadow: [
+              BoxShadow(color: _kViolet.withOpacity(0.18),
+                  blurRadius: 24, offset: const Offset(0, 8)),
+            ],
+          ),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            // Post title header
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.fromLTRB(20, 20, 20, 14),
+              decoration: const BoxDecoration(
+                gradient: LinearGradient(
+                    colors: [Color(0xFF7B6CF6), Color(0xFFA78BFA)],
+                    begin: Alignment.topLeft, end: Alignment.bottomRight),
+                borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+              ),
+              child: Text(post['title'] ?? '',
+                  maxLines: 2, overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: Colors.white,
+                      fontWeight: FontWeight.w700, fontSize: 14)),
+            ),
+            const SizedBox(height: 8),
+            // Options
+            _optionTile(ctx, Icons.edit_rounded, 'Edit Post', _kSky,
+                    () { Navigator.pop(ctx); _goToEdit(post); }),
+            _optionTile(ctx, Icons.sync_alt_rounded,
+                post['status'] == 'Open' ? 'Mark as Resolved' : 'Reopen Post',
+                _kMint, () async {
+                  Navigator.pop(ctx);
+                  final next = post['status'] == 'Open' ? 'Resolved' : 'Open';
+                  await SyncService.instance.updatePostStatus(
+                      post['id'], next);
+                  _loadData();
+                }),
+            _optionTile(ctx, Icons.delete_outline_rounded,
+                'Delete Post', _kBlush, () {
+                  Navigator.pop(ctx);
+                  AwesomeDialog(
+                    context: context, dialogType: DialogType.warning,
+                    title: 'Delete Post',
+                    desc: 'Are you sure you want to delete this post?',
+                    btnOkOnPress: () async {
+                      await SyncService.instance.deletePost(post['id']);
+                      _loadData();
+                    },
+                    btnCancelOnPress: () {},
+                  ).show();
+                }),
+            const SizedBox(height: 8),
+            // Cancel
+            GestureDetector(
+              onTap: () => Navigator.pop(ctx),
+              child: Container(
+                margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(vertical: 13),
+                decoration: BoxDecoration(
+                    color: const Color(0xFFF5F2FF),
+                    borderRadius: BorderRadius.circular(14)),
+                child: const Center(
+                  child: Text("Cancel", style: TextStyle(
+                      color: _kViolet, fontWeight: FontWeight.w700,
+                      fontSize: 14)),
+                ),
+              ),
+            ),
+          ]),
+        ),
+      ),
+    );
+  }
+
+  Widget _optionTile(BuildContext ctx, IconData icon, String label,
+      Color color, VoidCallback onTap) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        margin: const EdgeInsets.fromLTRB(16, 4, 16, 4),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
+        decoration: BoxDecoration(
+            color: color.withOpacity(0.07),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: color.withOpacity(0.20), width: 1)),
+        child: Row(children: [
+          Container(width: 34, height: 34,
+              decoration: BoxDecoration(
+                  color: color.withOpacity(0.12),
+                  borderRadius: BorderRadius.circular(10)),
+              child: Icon(icon, color: color, size: 17)),
+          const SizedBox(width: 12),
+          Text(label, style: TextStyle(color: _kInk,
+              fontWeight: FontWeight.w600, fontSize: 13.5)),
+        ]),
+      ),
+    );
   }
 
   @override
@@ -195,19 +346,20 @@ class _ProfileScreenState extends State<ProfileScreen>
                 child: Container(
                     width: 42, height: 42,
                     decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.75),
-                      borderRadius: BorderRadius.circular(13),
-                      border: Border.all(color: _kBorderGlass, width: 1.2),
-                      boxShadow: [BoxShadow(color: _kViolet.withOpacity(0.10),
-                          blurRadius: 8, offset: const Offset(0, 3))],
-                    ),
+                        color: Colors.white.withOpacity(0.75),
+                        borderRadius: BorderRadius.circular(13),
+                        border: Border.all(color: _kBorderGlass, width: 1.2),
+                        boxShadow: [BoxShadow(color: _kViolet.withOpacity(0.10),
+                            blurRadius: 8, offset: const Offset(0, 3))]),
                     child: const Icon(Icons.arrow_back_ios_new_rounded,
                         color: _kViolet, size: 17)),
               ),
               const SizedBox(width: 14),
             ],
-            const Text("My Profile", style: TextStyle(fontSize: 20,
-                fontWeight: FontWeight.w900, color: _kInk, letterSpacing: -0.4)),
+            Text(
+                widget.isOwnProfile ? "My Profile" : _displayName,
+                style: const TextStyle(fontSize: 20,
+                    fontWeight: FontWeight.w900, color: _kInk, letterSpacing: -0.4)),
           ]),
         ),
 
@@ -229,7 +381,6 @@ class _ProfileScreenState extends State<ProfileScreen>
           ),
           child: Column(children: [
             Row(children: [
-              // Avatar
               Container(
                 width: 62, height: 62,
                 decoration: BoxDecoration(
@@ -254,39 +405,34 @@ class _ProfileScreenState extends State<ProfileScreen>
                 Text(_displayEmail, style: TextStyle(fontSize: 11.5,
                     color: Colors.white.withOpacity(0.70))),
                 const SizedBox(height: 8),
-                // Badge
                 Container(
                     padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                     decoration: BoxDecoration(
-                      color: _badgeColor(_points).withOpacity(0.20),
-                      borderRadius: BorderRadius.circular(10),
-                      border: Border.all(
-                          color: _badgeColor(_points).withOpacity(0.50)),
-                    ),
+                        color: _badgeColor(_points).withOpacity(0.20),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(
+                            color: _badgeColor(_points).withOpacity(0.50))),
                     child: Text(_badgeLabel(_points), style: TextStyle(
                         fontSize: 11, fontWeight: FontWeight.w700,
                         color: _badgeColor(_points)))),
               ])),
             ]),
-
             const SizedBox(height: 16),
-
-            // ── Reputation stats row ──
             Row(children: [
-              _reputationStat('⭐', '$_points', 'Points'),
+              _reputationStat('⭐', '$_points',          'Points'),
               _divider(),
-              _reputationStat('🤝', '$_helpCount', 'Helped'),
+              _reputationStat('🤝', '$_helpCount',       'Helped'),
               _divider(),
-              _reputationStat('🔥', '$_streak', 'Day Streak'),
+              _reputationStat('🔥', '$_streak',          'Day Streak'),
               _divider(),
-              _reputationStat('📝', '${_myPosts.length}', 'Posts'),
+              _reputationStat('📝', '${_myPosts.length}','Posts'),
             ]),
           ]),
         ),
 
         const SizedBox(height: 14),
 
-        // ── Tab bar: My Posts | Skill Cards ──
+        // ── Tabs ──
         Container(
           margin: const EdgeInsets.symmetric(horizontal: 16),
           decoration: BoxDecoration(
@@ -297,8 +443,7 @@ class _ProfileScreenState extends State<ProfileScreen>
             controller: _tabCtrl,
             labelColor: Colors.white,
             unselectedLabelColor: _kInkLight,
-            labelStyle: const TextStyle(fontWeight: FontWeight.w700,
-                fontSize: 13),
+            labelStyle: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13),
             indicator: BoxDecoration(
                 gradient: const LinearGradient(
                     colors: [_kViolet, _kVioletLight],
@@ -306,112 +451,165 @@ class _ProfileScreenState extends State<ProfileScreen>
                 borderRadius: BorderRadius.circular(12)),
             indicatorSize: TabBarIndicatorSize.tab,
             dividerColor: Colors.transparent,
-            tabs: const [
-              Tab(text: "My Posts"),
-              Tab(text: "Skill Cards"),
-            ],
+            tabs: const [Tab(text: "My Posts"), Tab(text: "Skill Cards")],
           ),
         ),
 
         const SizedBox(height: 4),
 
-        // ── Tab content ──
         Expanded(child: TabBarView(
           controller: _tabCtrl,
-          children: [
-            _buildPostsTab(),
-            _buildSkillCardsTab(),
-          ],
+          children: [_buildPostsTab(), _buildSkillCardsTab()],
         )),
 
-
+        // ── Log out (only on own profile) ──
+        if (widget.isOwnProfile)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
+            child: SizedBox(width: double.infinity, height: 48,
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                    color: _kBlushSoft, borderRadius: BorderRadius.circular(28),
+                    border: Border.all(
+                        color: _kBlush.withOpacity(0.35), width: 1.5)),
+                child: OutlinedButton.icon(
+                  onPressed: () async {
+                    await AuthService().signOut();
+                    if (context.mounted) {
+                      Navigator.of(context).pushAndRemoveUntil(
+                          MaterialPageRoute(builder: (_) => const LoginScreen()),
+                              (r) => false);
+                    }
+                  },
+                  icon: const Icon(Icons.logout_rounded, color: _kBlush, size: 18),
+                  label: const Text("Log Out", style: TextStyle(
+                      color: _kBlush, fontWeight: FontWeight.w800, fontSize: 14)),
+                  style: OutlinedButton.styleFrom(side: BorderSide.none,
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(28))),
+                ),
+              ),
+            ),
+          ),
       ])),
     ]);
 
     return widget.embeddedMode ? body : Scaffold(body: body);
   }
 
-  Widget _reputationStat(String emoji, String value, String label) {
-    return Expanded(child: Column(children: [
-      Text(emoji, style: const TextStyle(fontSize: 16)),
-      const SizedBox(height: 3),
-      Text(value, style: const TextStyle(color: Colors.white,
-          fontWeight: FontWeight.w800, fontSize: 15)),
-      Text(label, style: TextStyle(color: Colors.white.withOpacity(0.70),
-          fontSize: 10.5, fontWeight: FontWeight.w500)),
-    ]));
-  }
+  Widget _reputationStat(String emoji, String value, String label) =>
+      Expanded(child: Column(children: [
+        Text(emoji, style: const TextStyle(fontSize: 16)),
+        const SizedBox(height: 3),
+        Text(value, style: const TextStyle(color: Colors.white,
+            fontWeight: FontWeight.w800, fontSize: 15)),
+        Text(label, style: TextStyle(color: Colors.white.withOpacity(0.70),
+            fontSize: 10.5, fontWeight: FontWeight.w500)),
+      ]));
 
   Widget _divider() => Container(width: 1, height: 36,
       color: Colors.white.withOpacity(0.25));
 
+  // ── Open post detail as centered floating card (same as community feed) ──
+  void _openPostDetail(Map<String, dynamic> post) {
+    showGeneralDialog(
+      context: context,
+      barrierDismissible: true,
+      barrierLabel: 'PostDetail',
+      barrierColor: Colors.black54,
+      transitionDuration: const Duration(milliseconds: 280),
+      transitionBuilder: (_, anim, __, child) {
+        final curve = CurvedAnimation(parent: anim, curve: Curves.easeOutCubic);
+        return ScaleTransition(
+          scale: Tween<double>(begin: 0.88, end: 1.0).animate(curve),
+          child: FadeTransition(opacity: curve, child: child),
+        );
+      },
+      pageBuilder: (ctx, _, __) => PostDetailCard(
+        post:        post,
+        localUserId: widget.localUserId,
+        onToggleStatus: (id, current) {
+          Navigator.pop(ctx);
+          final next = current == 'Open' ? 'Resolved' : 'Open';
+          SyncService.instance.updatePostStatus(id, next).then((_) => _loadData());
+        },
+        onDelete: (id) {
+          Navigator.pop(ctx);
+          AwesomeDialog(
+            context: context, dialogType: DialogType.warning,
+            title: 'Delete Post',
+            desc: 'Are you sure you want to delete this post?',
+            btnOkOnPress: () async {
+              await SyncService.instance.deletePost(id);
+              _loadData();
+            },
+            btnCancelOnPress: () {},
+          ).show();
+        },
+        onEdit: (p) {
+          Navigator.pop(ctx);
+          _goToEdit(p);
+        },
+      ),
+    );
+  }
+
   // ── Posts tab ──────────────────────────────────────────────────────────────
   Widget _buildPostsTab() {
-    return Stack(
-      children: [
-        // Posts list
-        _myPosts.isEmpty
-            ? Center(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                const Icon(Icons.post_add_rounded,
-                    color: _kInkMuted, size: 50),
-                const SizedBox(height: 10),
-                const Text("No posts yet",
-                    style: TextStyle(
-                        color: _kInkLight,
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600)),
-              ],
-            ))
-            : ListView.builder(
-          padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
-          itemCount: _myPosts.length,
-          itemBuilder: (_, i) => _buildPostCard(_myPosts[i]),
-        ),
-
-        // Circular plus button at bottom-right
-        Positioned(
-          bottom: 20,
-          right: 20,
+    return Stack(children: [
+      _myPosts.isEmpty
+          ? Center(child: Column(mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.post_add_rounded, color: _kInkMuted, size: 50),
+            const SizedBox(height: 10),
+            const Text("No posts yet", style: TextStyle(color: _kInkLight,
+                fontSize: 14, fontWeight: FontWeight.w600)),
+          ]))
+          : ListView.builder(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 80),
+        itemCount: _myPosts.length,
+        itemBuilder: (_, i) => _buildPostCard(_myPosts[i]),
+      ),
+      // FAB — only on own profile
+      if (widget.isOwnProfile)
+        Positioned(bottom: 20, right: 20,
           child: GestureDetector(
-            onTap: _goToCreatePost,
+            onTap: () => Navigator.of(context).push(PageRouteBuilder(
+              pageBuilder: (_, anim, __) => CreatePostScreen(
+                  localUserId: widget.localUserId),
+              transitionsBuilder: (_, anim, __, child) => SlideTransition(
+                position: Tween<Offset>(begin: const Offset(0, 1), end: Offset.zero)
+                    .animate(CurvedAnimation(parent: anim, curve: Curves.easeOutCubic)),
+                child: FadeTransition(opacity: anim, child: child),
+              ),
+              transitionDuration: const Duration(milliseconds: 380),
+            )).then((_) => _loadData()),
             child: TweenAnimationBuilder<double>(
               tween: Tween(begin: 0, end: 1),
               duration: const Duration(milliseconds: 600),
               curve: Curves.elasticOut,
               builder: (_, v, child) => Transform.scale(scale: v, child: child),
               child: Container(
-                width: 58,
-                height: 58,
+                width: 54, height: 54,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
                   gradient: const LinearGradient(
                       colors: [_kViolet, _kVioletLight, Color(0xFFEC4899)],
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight),
+                      begin: Alignment.topLeft, end: Alignment.bottomRight),
                   boxShadow: [
-                    BoxShadow(
-                        color: _kViolet.withOpacity(0.40),
-                        blurRadius: 18,
-                        offset: const Offset(0, 7)),
-                    BoxShadow(
-                        color: _kBlush.withOpacity(0.20),
-                        blurRadius: 12,
-                        offset: const Offset(0, 4)),
+                    BoxShadow(color: _kViolet.withOpacity(0.38),
+                        blurRadius: 16, offset: const Offset(0, 6)),
                   ],
                 ),
-                child: const Icon(Icons.add_rounded, color: Colors.white, size: 28),
+                child: const Icon(Icons.add_rounded, color: Colors.white, size: 26),
               ),
             ),
           ),
         ),
-      ],
-    );
+    ]);
   }
 
-
+  // ── Post card with three-dot menu + tap to open detail ───────────────────
   Widget _buildPostCard(Map<String, dynamic> post) {
     final isOpen    = post['status']   == 'Open';
     final urgency   = post['urgencyLevel'] as String? ?? 'Low';
@@ -419,68 +617,89 @@ class _ProfileScreenState extends State<ProfileScreen>
     final urgencyColor = urgency == 'High' ? _kBlush
         : urgency == 'Medium' ? _kAmber : _kMint;
 
-    return Container(
-      margin: const EdgeInsets.only(bottom: 10),
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.82),
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(
-            color: isBoosted ? _kAmber.withOpacity(0.40) : _kBorderGlass,
-            width: 1.2),
-        boxShadow: [BoxShadow(color: _kViolet.withOpacity(0.07),
-            blurRadius: 12, offset: const Offset(0, 4))],
-      ),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Row(children: [
-          Expanded(child: Text(post['title'] ?? '', style: const TextStyle(
-              fontWeight: FontWeight.w800, fontSize: 13.5, color: _kInk))),
-          const SizedBox(width: 8),
-          // Urgency badge
-          Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-              decoration: BoxDecoration(
-                  color: urgencyColor.withOpacity(0.12),
-                  borderRadius: BorderRadius.circular(8)),
-              child: Text(urgency, style: TextStyle(fontSize: 9.5,
-                  fontWeight: FontWeight.w700, color: urgencyColor))),
-          const SizedBox(width: 6),
-          // Status badge
-          Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-              decoration: BoxDecoration(
-                  gradient: isOpen
-                      ? const LinearGradient(
-                      colors: [Color(0xFFFCE7F3), Color(0xFFFBCFE8)])
-                      : const LinearGradient(
-                      colors: [Color(0xFFD1FAE5), Color(0xFFA7F3D0)]),
-                  borderRadius: BorderRadius.circular(8)),
-              child: Text(post['status'] ?? '', style: TextStyle(
-                  fontSize: 9.5, fontWeight: FontWeight.w800,
-                  color: isOpen ? const Color(0xFF9D174D)
-                      : const Color(0xFF065F46)))),
-        ]),
-        const SizedBox(height: 5),
-        Text((post['description'] ?? '').length > 80
-            ? '${(post['description'] as String).substring(0, 80)}...'
-            : post['description'] ?? '',
-            style: const TextStyle(fontSize: 12.5,
-                color: _kInkLight, height: 1.4)),
-        const SizedBox(height: 8),
-        Row(children: [
-          _chip(post['postType'], _kVioletSoft, _kVioletLight),
-          const SizedBox(width: 6),
-          _chip(post['category'], _kSkySoft, _kSky),
-          if (isBoosted) ...[
+    return GestureDetector(
+      onTap: () => _openPostDetail(post),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 10),
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: Colors.white.withOpacity(0.82),
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(
+              color: isBoosted ? _kAmber.withOpacity(0.40) : _kBorderGlass,
+              width: 1.2),
+          boxShadow: [BoxShadow(color: _kViolet.withOpacity(0.07),
+              blurRadius: 12, offset: const Offset(0, 4))],
+        ),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            Expanded(child: Text(post['title'] ?? '', style: const TextStyle(
+                fontWeight: FontWeight.w800, fontSize: 13.5, color: _kInk))),
+            // Urgency badge — always visible
+            Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                    color: urgencyColor.withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(8)),
+                child: Row(mainAxisSize: MainAxisSize.min, children: [
+                  Icon(
+                      urgency == 'High'   ? Icons.arrow_upward_rounded
+                          : urgency == 'Medium' ? Icons.remove_rounded
+                          : Icons.arrow_downward_rounded,
+                      size: 9, color: urgencyColor),
+                  const SizedBox(width: 3),
+                  Text(urgency, style: TextStyle(fontSize: 9.5,
+                      fontWeight: FontWeight.w700, color: urgencyColor)),
+                ])),
             const SizedBox(width: 6),
-            _chip('🚀 Boosted', _kAmber.withOpacity(0.12), _kAmber),
-          ],
-          const Spacer(),
-          Text(_timeAgo(post['datePosted'] ?? ''),
-              style: const TextStyle(fontSize: 10.5, color: _kInkMuted)),
+            // Status badge
+            Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                    gradient: isOpen
+                        ? const LinearGradient(
+                        colors: [Color(0xFFFCE7F3), Color(0xFFFBCFE8)])
+                        : const LinearGradient(
+                        colors: [Color(0xFFD1FAE5), Color(0xFFA7F3D0)]),
+                    borderRadius: BorderRadius.circular(8)),
+                child: Text(post['status'] ?? '', style: TextStyle(
+                    fontSize: 9.5, fontWeight: FontWeight.w800,
+                    color: isOpen ? const Color(0xFF9D174D)
+                        : const Color(0xFF065F46)))),
+            const SizedBox(width: 4),
+            // ── Three-dot menu — only on own profile ──
+            if (widget.isOwnProfile)
+              GestureDetector(
+                onTap: () => _showPostOptions(context, post),
+                child: Container(
+                    width: 30, height: 30,
+                    decoration: BoxDecoration(
+                        color: _kVioletSoft, shape: BoxShape.circle),
+                    child: const Icon(Icons.more_horiz_rounded,
+                        color: _kViolet, size: 16)),
+              ),
+          ]),
+          const SizedBox(height: 5),
+          Text((post['description'] ?? '').length > 80
+              ? '${(post['description'] as String).substring(0, 80)}...'
+              : post['description'] ?? '',
+              style: const TextStyle(fontSize: 12.5, color: _kInkLight, height: 1.4)),
+          const SizedBox(height: 8),
+          Row(children: [
+            _chip(post['postType'], _kVioletSoft, _kVioletLight),
+            const SizedBox(width: 6),
+            _chip(post['category'], _kSkySoft, _kSky),
+            if (isBoosted) ...[
+              const SizedBox(width: 6),
+              _chip('🚀 Boosted', _kAmber.withOpacity(0.12), _kAmber),
+            ],
+            const Spacer(),
+            Text(_timeAgo(post['datePosted'] ?? ''),
+                style: const TextStyle(fontSize: 10.5, color: _kInkMuted)),
+          ]),
         ]),
-      ]),
-    );
+      ), // end Container
+    ); // end GestureDetector
   }
 
   Widget _chip(String label, Color bg, Color fg) => Container(
@@ -514,10 +733,10 @@ class _ProfileScreenState extends State<ProfileScreen>
   }
 
   Widget _buildSkillCard(Map<String, dynamic> card) {
-    final cat    = card['skillCategory'] as String? ?? 'Others';
-    final pts    = (card['skillPoints']  as int? ?? 0);
-    final color  = _catColor(cat);
-    final icon   = _catIcon(cat);
+    final cat   = card['skillCategory'] as String? ?? 'Others';
+    final pts   = (card['skillPoints']  as int? ?? 0);
+    final color = _catColor(cat);
+    final icon  = _catIcon(cat);
     return Container(
       decoration: BoxDecoration(
         color: Colors.white,
@@ -543,9 +762,7 @@ class _ProfileScreenState extends State<ProfileScreen>
                     fontWeight: FontWeight.w700, color: color)),
               ]),
               const SizedBox(height: 6),
-              // Points progress bar (max 200)
-              ClipRRect(
-                borderRadius: BorderRadius.circular(4),
+              ClipRRect(borderRadius: BorderRadius.circular(4),
                 child: LinearProgressIndicator(
                   value: (pts / 200).clamp(0.0, 1.0),
                   backgroundColor: color.withOpacity(0.10),

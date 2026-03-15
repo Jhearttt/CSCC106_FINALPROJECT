@@ -3,7 +3,6 @@ import 'package:awesome_dialog/awesome_dialog.dart';
 import 'package:final_project/backend/databaseHelper.dart';
 import 'package:final_project/services/syncService.dart';
 import 'package:flutter/material.dart';
-import 'package:image_picker/image_picker.dart';
 
 // ─── Palette ──────────────────────────────────────────────────────────────────
 const _kInk         = Color(0xFF1E1B4B);
@@ -70,7 +69,6 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
   File?   _pickedImage;
   String? _existingImageUrl;
   bool    _removeExistingImage = false;
-  final   _picker = ImagePicker();
 
   bool get _isEditMode => widget.existingPost != null;
 
@@ -157,44 +155,7 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
           boxShadow: [BoxShadow(color: _kViolet.withOpacity(0.15),
               blurRadius: 24, offset: const Offset(0, 8))],
         ),
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          Container(width: 36, height: 4,
-              margin: const EdgeInsets.only(top: 12, bottom: 8),
-              decoration: BoxDecoration(color: _kBorderGlass,
-                  borderRadius: BorderRadius.circular(2))),
-          const Padding(
-            padding: EdgeInsets.fromLTRB(20, 8, 20, 8),
-            child: Text("Add Photo", style: TextStyle(fontSize: 16,
-                fontWeight: FontWeight.w800, color: _kInk)),
-          ),
-          const Divider(height: 1),
-          _pickerOption(Icons.photo_library_rounded, "Choose from Gallery",
-              _kViolet, () async {
-                Navigator.pop(context);
-                final xf = await _picker.pickImage(
-                    source: ImageSource.gallery, imageQuality: 80);
-                if (xf != null && mounted) setState(() {
-                  _pickedImage = File(xf.path); _removeExistingImage = false;
-                });
-              }),
-          _pickerOption(Icons.camera_alt_rounded, "Take a Photo", _kSky,
-                  () async {
-                Navigator.pop(context);
-                final xf = await _picker.pickImage(
-                    source: ImageSource.camera, imageQuality: 80);
-                if (xf != null && mounted) setState(() {
-                  _pickedImage = File(xf.path); _removeExistingImage = false;
-                });
-              }),
-          if (_pickedImage != null ||
-              (_existingImageUrl != null && !_removeExistingImage))
-            _pickerOption(Icons.delete_outline_rounded, "Remove Photo",
-                _kBlush, () {
-                  Navigator.pop(context);
-                  setState(() { _pickedImage = null; _removeExistingImage = true; });
-                }),
-          const SizedBox(height: 12),
-        ]),
+
       ),
     );
   }

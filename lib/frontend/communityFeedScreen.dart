@@ -4,10 +4,13 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:final_project/backend/databaseHelper.dart';
 import 'package:final_project/backend/commentsModal.dart';
 import 'package:final_project/frontend/createPostScreen.dart';
+import 'package:final_project/frontend/notificationsScreen.dart';
+import 'package:final_project/frontend/profileScreen.dart';
 import 'package:final_project/services/connectivityService.dart';
 import 'package:final_project/services/syncService.dart';
 import 'package:flutter/material.dart';
 
+// ─── Palette ──────────────────────────────────────────────────────────────────
 const _kInk         = Color(0xFF1E1B4B);
 const _kInkMid      = Color(0xFF4338CA);
 const _kInkLight    = Color(0xFF818CF8);
@@ -23,6 +26,7 @@ const _kSky         = Color(0xFF60A5FA);
 const _kSkySoft     = Color(0xFFDBEAFE);
 const _kBorderGlass = Color(0xFFE0D9FF);
 
+// ─── Background painters ──────────────────────────────────────────────────────
 class _AuroraMeshPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
@@ -55,7 +59,7 @@ class _DotGridPainter extends CustomPainter {
   bool shouldRepaint(covariant CustomPainter _) => false;
 }
 
-// ── Animated entrance card ────────────────────────────────────────────────────
+// ─── Staggered entrance animation ────────────────────────────────────────────
 class _AnimatedPostCard extends StatefulWidget {
   final Widget child;
   final int index;
@@ -76,7 +80,7 @@ class _AnimatedPostCardState extends State<_AnimatedPostCard>
     _ctrl = AnimationController(vsync: this,
         duration: const Duration(milliseconds: 400));
     _fade  = CurvedAnimation(parent: _ctrl, curve: Curves.easeOut);
-    _slide = Tween<Offset>(begin: const Offset(0, 0.12), end: Offset.zero)
+    _slide = Tween<Offset>(begin: const Offset(0, 0.10), end: Offset.zero)
         .animate(CurvedAnimation(parent: _ctrl, curve: Curves.easeOutCubic));
     Future.delayed(Duration(milliseconds: 55 * (widget.index % 8)), () {
       if (mounted) _ctrl.forward();
@@ -93,7 +97,7 @@ class _AnimatedPostCardState extends State<_AnimatedPostCard>
   );
 }
 
-// ── Community Feed Screen ─────────────────────────────────────────────────────
+// ─── Community Feed Screen ────────────────────────────────────────────────────
 class CommunityFeedScreen extends StatefulWidget {
   final int? localUserId;
   const CommunityFeedScreen({super.key, this.localUserId});
@@ -105,11 +109,12 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
     with SingleTickerProviderStateMixin {
 
   List<Map<String, dynamic>> _posts    = [];
-  bool   _loading    = true;
-  bool   _isOnline   = true;
-  String _typeFilter = 'All';
+  bool    _loading    = true;
+  bool    _isOnline   = true;
+  String  _typeFilter = 'All';
   String? _catFilter;
-  final _searchCtrl = TextEditingController();
+  int     _unreadCount = 0;
+  final   _searchCtrl = TextEditingController();
 
   final _categories  = ['All', 'Programming', 'Academic', 'Design', 'Others'];
   final _typeFilters = ['All', 'Help Request', 'Skill Offer'];
@@ -131,12 +136,10 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
     _bannerSlide = Tween<Offset>(
         begin: const Offset(0, -1), end: Offset.zero)
         .animate(CurvedAnimation(parent: _bannerCtrl, curve: Curves.easeOutCubic));
-
     _isOnline = ConnectivityService.instance.isOnline;
     _connectivitySub = ConnectivityService.instance.onStatusChange.listen((online) {
       if (mounted) setState(() => _isOnline = online);
     });
-
     _loadPosts();
     _startRealtimeListener();
   }
@@ -150,23 +153,53 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
     super.dispose();
   }
 
+  // ── Data loading ──────────────────────────────────────────────────────────
   Future<void> _loadPosts() async {
     setState(() => _loading = true);
-    // Auto-boost expired unresolved posts
     await DatabaseHelper().checkAndBoostExpiredPosts();
+    await DatabaseHelper().syncCommentCounts(); // fix counts for pre-v4 comments
     await SyncService.instance.pullPostsFromFirestore();
     await _queryLocal();
+    await _loadUnreadCount();
     if (mounted) setState(() => _loading = false);
   }
 
+  Future<void> _loadUnreadCount() async {
+    if (widget.localUserId == null) return;
+    final count = await DatabaseHelper()
+        .getUnreadNotificationCount(widget.localUserId!);
+    if (mounted) setState(() => _unreadCount = count);
+  }
+
   Future<void> _queryLocal() async {
-    final data = await DatabaseHelper().getAllPosts(
+    final raw = await DatabaseHelper().getAllPosts(
       postType: _typeFilter == 'All' ? null : _typeFilter,
       category: (_catFilter == null || _catFilter == 'All') ? null : _catFilter,
     );
-    if (mounted) setState(() => _posts = data);
+
+    // Urgency rank: High = 0, Medium = 1, Low = 2
+    int _urgencyRank(String u) => u == 'High' ? 0 : u == 'Medium' ? 1 : 2;
+
+    // Open posts sorted by urgency (High first), then by date within same urgency
+    final open = raw.where((p) => p['status'] != 'Resolved').toList()
+      ..sort((a, b) {
+        final uA = _urgencyRank(a['urgencyLevel'] as String? ?? 'Low');
+        final uB = _urgencyRank(b['urgencyLevel'] as String? ?? 'Low');
+        if (uA != uB) return uA.compareTo(uB);
+        // Same urgency → newer first
+        return (b['datePosted'] as String? ?? '')
+            .compareTo(a['datePosted'] as String? ?? '');
+      });
+
+    // Resolved posts always at bottom, sorted by date descending
+    final resolved = raw.where((p) => p['status'] == 'Resolved').toList()
+      ..sort((a, b) => (b['datePosted'] as String? ?? '')
+          .compareTo(a['datePosted'] as String? ?? ''));
+
+    if (mounted) setState(() => _posts = [...open, ...resolved]);
   }
 
+  // ── Real-time Firestore stream ────────────────────────────────────────────
   void _startRealtimeListener() {
     _firestoreSub = FirebaseFirestore.instance
         .collection('posts')
@@ -174,21 +207,15 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
         .snapshots()
         .listen((snapshot) async {
       if (!mounted) return;
-
       final added = snapshot.docChanges
           .where((c) => c.type == DocumentChangeType.added).length;
-
       if (added > 0 && !_loading) {
         await SyncService.instance.pullPostsFromFirestore();
         if (mounted) {
-          setState(() {
-            _pendingNewPosts += added;
-            _showNewBanner    = true;
-          });
+          setState(() { _pendingNewPosts += added; _showNewBanner = true; });
           _bannerCtrl.forward();
         }
       }
-
       final changed = snapshot.docChanges.any((c) =>
       c.type == DocumentChangeType.modified ||
           c.type == DocumentChangeType.removed);
@@ -204,13 +231,25 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
     await _queryLocal();
   }
 
+  // ── Search ────────────────────────────────────────────────────────────────
   Future<void> _search(String kw) async {
     if (kw.trim().isEmpty) { _loadPosts(); return; }
     setState(() => _loading = true);
-    final data = await DatabaseHelper().searchPosts(kw.trim());
-    if (mounted) setState(() { _posts = data; _loading = false; });
+    final raw = await DatabaseHelper().searchPosts(kw.trim());
+    int _urgencyRank(String u) => u == 'High' ? 0 : u == 'Medium' ? 1 : 2;
+    final open = raw.where((p) => p['status'] != 'Resolved').toList()
+      ..sort((a, b) {
+        final uA = _urgencyRank(a['urgencyLevel'] as String? ?? 'Low');
+        final uB = _urgencyRank(b['urgencyLevel'] as String? ?? 'Low');
+        if (uA != uB) return uA.compareTo(uB);
+        return (b['datePosted'] as String? ?? '')
+            .compareTo(a['datePosted'] as String? ?? '');
+      });
+    final resolved = raw.where((p) => p['status'] == 'Resolved').toList();
+    if (mounted) setState(() { _posts = [...open, ...resolved]; _loading = false; });
   }
 
+  // ── Delete ────────────────────────────────────────────────────────────────
   void _deletePost(int postId) {
     AwesomeDialog(
       context: context, dialogType: DialogType.warning,
@@ -222,19 +261,18 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
     ).show();
   }
 
+  // ── Toggle status + award points ──────────────────────────────────────────
   void _toggleStatus(int postId, String current) async {
     final next = current == 'Open' ? 'Resolved' : 'Open';
     await SyncService.instance.updatePostStatus(postId, next);
-    // Award reputation points to the most recent commenter when post is resolved
     if (next == 'Resolved') {
       final comments = await DatabaseHelper().getCommentsByPost(postId);
       if (comments.isNotEmpty) {
         final lastHelper = comments.last['userId'] as int?;
-        // Find post category to update skill card
-        final posts = await DatabaseHelper().getAllPosts();
-        final post  = posts.firstWhere((p) => p['id'] == postId,
+        final posts      = await DatabaseHelper().getAllPosts();
+        final post       = posts.firstWhere((p) => p['id'] == postId,
             orElse: () => {});
-        final category = post['category'] as String? ?? 'Others';
+        final category   = post['category'] as String? ?? 'Others';
         if (lastHelper != null) {
           await DatabaseHelper().addPoints(lastHelper, 10, category);
         }
@@ -243,6 +281,7 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
     _queryLocal();
   }
 
+  // ── Navigate to create post ───────────────────────────────────────────────
   void _goToCreate({Map<String, dynamic>? existingPost}) {
     Navigator.of(context).push(PageRouteBuilder(
       pageBuilder: (_, anim, __) => CreatePostScreen(
@@ -254,6 +293,74 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
       ),
       transitionDuration: const Duration(milliseconds: 380),
     )).then((_) => _loadPosts());
+  }
+
+  // ── Open post detail as a centered floating card ──────────────────────────
+  void _openPostDetail(Map<String, dynamic> post) {
+    showGeneralDialog(
+      context: context,
+      barrierDismissible: true,
+      barrierLabel: 'PostDetail',
+      barrierColor: Colors.black54,
+      transitionDuration: const Duration(milliseconds: 280),
+      transitionBuilder: (_, anim, __, child) {
+        final curve = CurvedAnimation(parent: anim, curve: Curves.easeOutCubic);
+        return ScaleTransition(
+          scale: Tween<double>(begin: 0.88, end: 1.0).animate(curve),
+          child: FadeTransition(opacity: curve, child: child),
+        );
+      },
+      pageBuilder: (ctx, _, __) => PostDetailCard(
+        post:        post,
+        localUserId: widget.localUserId,
+        onToggleStatus: (id, current) {
+          Navigator.pop(ctx);
+          _toggleStatus(id, current);
+        },
+        onDelete: (id) {
+          Navigator.pop(ctx);
+          _deletePost(id);
+        },
+        onEdit: (p) {
+          Navigator.pop(ctx);
+          _goToCreate(existingPost: p);
+        },
+      ),
+    );
+  }
+
+  // ── Full screen image viewer ──────────────────────────────────────────────
+  void _openFullScreenImage(BuildContext context, String url) {
+    Navigator.of(context).push(PageRouteBuilder(
+      opaque: false,
+      barrierColor: Colors.black87,
+      pageBuilder: (_, anim, __) => FadeTransition(
+        opacity: anim,
+        child: Scaffold(
+          backgroundColor: Colors.transparent,
+          body: Stack(children: [
+            GestureDetector(onTap: () => Navigator.pop(context),
+                child: Container(color: Colors.black87)),
+            Center(child: InteractiveViewer(minScale: 0.5, maxScale: 4.0,
+                child: Image.network(url, fit: BoxFit.contain,
+                  loadingBuilder: (_, c, p) => p == null ? c
+                      : const Center(child: CircularProgressIndicator(
+                      color: Colors.white)),
+                ))),
+            Positioned(top: 48, right: 16,
+                child: GestureDetector(onTap: () => Navigator.pop(context),
+                    child: Container(width: 38, height: 38,
+                        decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.15),
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                                color: Colors.white.withOpacity(0.30), width: 1)),
+                        child: const Icon(Icons.close_rounded,
+                            color: Colors.white, size: 20)))),
+          ]),
+        ),
+      ),
+    ));
   }
 
   String _timeAgo(String dateStr) {
@@ -268,6 +375,9 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
     } catch (_) { return ''; }
   }
 
+  // ══════════════════════════════════════════════════════════════════════════
+  //  BUILD
+  // ══════════════════════════════════════════════════════════════════════════
   @override
   Widget build(BuildContext context) {
     return Stack(children: [
@@ -290,15 +400,46 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
             const Text("Community Feed", style: TextStyle(fontSize: 20,
                 fontWeight: FontWeight.w900, color: _kInk, letterSpacing: -0.4)),
             const Spacer(),
+            // ── Bell notification button ──
+            GestureDetector(
+              onTap: () => Navigator.push(context, MaterialPageRoute(
+                  builder: (_) => NotificationsScreen(
+                      localUserId: widget.localUserId)))
+                  .then((_) => _loadUnreadCount()),
+              child: Stack(clipBehavior: Clip.none, children: [
+                Container(
+                    width: 38, height: 38,
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.75),
+                      shape: BoxShape.circle,
+                      border: Border.all(color: _kBorderGlass, width: 1.2),
+                      boxShadow: [BoxShadow(color: _kViolet.withOpacity(0.10),
+                          blurRadius: 8, offset: const Offset(0, 3))],
+                    ),
+                    child: const Icon(Icons.notifications_outlined,
+                        color: _kViolet, size: 20)),
+                if (_unreadCount > 0)
+                  Positioned(top: -2, right: -2,
+                      child: Container(
+                          width: 17, height: 17,
+                          decoration: const BoxDecoration(
+                              color: _kBlush, shape: BoxShape.circle),
+                          child: Center(child: Text(
+                              _unreadCount > 9 ? '9+' : '$_unreadCount',
+                              style: const TextStyle(color: Colors.white,
+                                  fontSize: 9, fontWeight: FontWeight.w800))))),
+              ]),
+            ),
+            const SizedBox(width: 8),
+            // Connectivity badge
             AnimatedContainer(
               duration: const Duration(milliseconds: 400),
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
               decoration: BoxDecoration(
-                color: (_isOnline ? _kMint : Colors.orange).withOpacity(0.12),
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(
-                    color: (_isOnline ? _kMint : Colors.orange).withOpacity(0.40)),
-              ),
+                  color: (_isOnline ? _kMint : Colors.orange).withOpacity(0.12),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                      color: (_isOnline ? _kMint : Colors.orange).withOpacity(0.40))),
               child: Row(mainAxisSize: MainAxisSize.min, children: [
                 Container(width: 6, height: 6,
                     decoration: BoxDecoration(
@@ -307,8 +448,7 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
                 const SizedBox(width: 5),
                 Text(_isOnline ? 'Live' : 'Offline',
                     style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700,
-                        color: _isOnline
-                            ? const Color(0xFF065F46)
+                        color: _isOnline ? const Color(0xFF065F46)
                             : Colors.orange.shade800)),
               ]),
             ),
@@ -448,7 +588,7 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
           ]),
         ),
 
-        // ── Feed + new-posts banner ──
+        // ── Feed ──
         Expanded(child: Stack(children: [
           _loading
               ? const Center(child: CircularProgressIndicator(color: _kViolet))
@@ -487,11 +627,10 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
                       const Icon(Icons.arrow_upward_rounded,
                           color: Colors.white, size: 16),
                       const SizedBox(width: 8),
-                      Text(
-                        '$_pendingNewPosts new post${_pendingNewPosts != 1 ? 's' : ''} — tap to load',
-                        style: const TextStyle(color: Colors.white,
-                            fontSize: 13, fontWeight: FontWeight.w700),
-                      ),
+                      Text('$_pendingNewPosts new post'
+                          '${_pendingNewPosts != 1 ? 's' : ''} — tap to load',
+                          style: const TextStyle(color: Colors.white,
+                              fontSize: 13, fontWeight: FontWeight.w700)),
                       const Spacer(),
                       const Icon(Icons.refresh_rounded,
                           color: Colors.white70, size: 16),
@@ -535,56 +674,7 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
     ]);
   }
 
-  // ── Full screen image viewer ──────────────────────────────────────────────
-  void _openFullScreenImage(BuildContext context, String imageUrl) {
-    Navigator.of(context).push(PageRouteBuilder(
-      opaque: false,
-      barrierColor: Colors.black87,
-      pageBuilder: (_, anim, __) => FadeTransition(
-        opacity: anim,
-        child: Scaffold(
-          backgroundColor: Colors.transparent,
-          body: Stack(children: [
-            // Dismiss on tap outside
-            GestureDetector(
-              onTap: () => Navigator.of(context).pop(),
-              child: Container(color: Colors.black87),
-            ),
-            // Pinch-to-zoom image
-            Center(child: InteractiveViewer(
-              minScale: 0.5, maxScale: 4.0,
-              child: Image.network(
-                imageUrl,
-                fit: BoxFit.contain,
-                loadingBuilder: (_, child, progress) => progress == null
-                    ? child
-                    : const Center(child: CircularProgressIndicator(
-                    color: Colors.white)),
-              ),
-            )),
-            // Close button
-            Positioned(top: 48, right: 16,
-              child: GestureDetector(
-                onTap: () => Navigator.of(context).pop(),
-                child: Container(
-                  width: 38, height: 38,
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.15),
-                    shape: BoxShape.circle,
-                    border: Border.all(
-                        color: Colors.white.withOpacity(0.30), width: 1),
-                  ),
-                  child: const Icon(Icons.close_rounded,
-                      color: Colors.white, size: 20),
-                ),
-              ),
-            ),
-          ]),
-        ),
-      ),
-    ));
-  }
-
+  // ── Empty state ───────────────────────────────────────────────────────────
   Widget _buildEmptyState() {
     return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center,
         children: [
@@ -593,15 +683,12 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
             duration: const Duration(milliseconds: 600),
             curve: Curves.easeOutBack,
             builder: (_, v, child) => Transform.scale(scale: v, child: child),
-            child: Container(
-              width: 80, height: 80,
-              decoration: BoxDecoration(
-                gradient: LinearGradient(colors: [
-                  _kViolet.withOpacity(0.15), _kBlush.withOpacity(0.10)]),
-                shape: BoxShape.circle,
-              ),
-              child: const Icon(Icons.inbox_rounded, color: _kViolet, size: 38),
-            ),
+            child: Container(width: 80, height: 80,
+                decoration: BoxDecoration(
+                    gradient: LinearGradient(colors: [
+                      _kViolet.withOpacity(0.15), _kBlush.withOpacity(0.10)]),
+                    shape: BoxShape.circle),
+                child: const Icon(Icons.inbox_rounded, color: _kViolet, size: 38)),
           ),
           const SizedBox(height: 16),
           const Text("No posts yet", style: TextStyle(color: _kInk, fontSize: 16,
@@ -632,6 +719,7 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
         ]));
   }
 
+  // ── Post card (feed) ──────────────────────────────────────────────────────
   Widget _buildPostCard(Map<String, dynamic> post) {
     final isOpen    = post['status']   == 'Open';
     final isHelpReq = post['postType'] == 'Help Request';
@@ -639,204 +727,271 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
         post['userId'] == widget.localUserId;
     final initials  = (post['userFullName'] as String? ?? '?').isNotEmpty
         ? (post['userFullName'] as String)[0].toUpperCase() : '?';
+    final photoUrl  = post['userProfilePic'] as String?;
     final urgency   = post['urgencyLevel'] as String? ?? 'Low';
     final isBoosted = (post['isBoosted'] as int? ?? 0) == 1;
     final urgencyColor = urgency == 'High'   ? _kBlush
         : urgency == 'Medium' ? const Color(0xFFFCD34D) : _kMint;
 
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      decoration: BoxDecoration(
-        color: isBoosted
-            ? const Color(0xFFFFFBEB).withOpacity(0.95)
-            : Colors.white.withOpacity(0.82),
-        borderRadius: BorderRadius.circular(22),
-        border: Border.all(
-            color: isBoosted
-                ? const Color(0xFFFCD34D).withOpacity(0.50) : _kBorderGlass,
-            width: isBoosted ? 1.8 : 1.2),
-        boxShadow: [
-          BoxShadow(color: _kViolet.withOpacity(0.08),
-              blurRadius: 18, offset: const Offset(0, 6)),
-          BoxShadow(color: Colors.white.withOpacity(0.80),
-              blurRadius: 6, offset: const Offset(-2, -2)),
-        ],
-      ),
-      child: Padding(padding: const EdgeInsets.all(16),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Row(children: [
-            Container(
-              width: 42, height: 42,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                gradient: const LinearGradient(colors: [_kViolet, _kVioletLight],
-                    begin: Alignment.topLeft, end: Alignment.bottomRight),
-                boxShadow: [BoxShadow(
-                    color: _kViolet.withOpacity(0.30), blurRadius: 8)],
-              ),
-              child: Center(child: Text(initials, style: const TextStyle(
-                  color: Colors.white, fontSize: 16, fontWeight: FontWeight.w800))),
-            ),
-            const SizedBox(width: 10),
-            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(children: [
-                    if (isBoosted) ...[
-                      const Text('🚀 ', style: TextStyle(fontSize: 11)),
-                    ],
-                    Flexible(child: Text(post['userFullName'] ?? 'Unknown',
-                        style: const TextStyle(fontWeight: FontWeight.w700,
-                            fontSize: 13.5, color: _kInk))),
-                  ]),
-                  Text(_timeAgo(post['datePosted'] ?? ''),
-                      style: const TextStyle(fontSize: 11, color: _kInkMuted)),
-                ])),
-            // Urgency badge (only show Medium/High)
-            if (urgency != 'Low') ...[
+    return GestureDetector(
+      onTap: () => _openPostDetail(post),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 12),
+        decoration: BoxDecoration(
+          color: isBoosted
+              ? const Color(0xFFFFFBEB).withOpacity(0.95)
+              : isOpen
+              ? Colors.white.withOpacity(0.82)
+              : Colors.white.withOpacity(0.55), // resolved = dimmed
+          borderRadius: BorderRadius.circular(22),
+          border: Border.all(
+              color: isBoosted
+                  ? const Color(0xFFFCD34D).withOpacity(0.50)
+                  : !isOpen
+                  ? _kMint.withOpacity(0.30)
+                  : _kBorderGlass,
+              width: isBoosted ? 1.8 : 1.2),
+          boxShadow: [
+            BoxShadow(color: _kViolet.withOpacity(isOpen ? 0.08 : 0.03),
+                blurRadius: 18, offset: const Offset(0, 6)),
+          ],
+        ),
+        child: Padding(padding: const EdgeInsets.all(14),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+
+            // ── Avatar + author + badges ──
+            Row(children: [
+              // Profile photo or initial avatar
+              _buildAvatar(photoUrl, initials, 40),
+              const SizedBox(width: 10),
+              Expanded(child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Row(children: [
+                  if (isBoosted) const Text('🚀 ',
+                      style: TextStyle(fontSize: 10)),
+                  Flexible(child: Text(post['userFullName'] ?? 'Unknown',
+                      style: const TextStyle(fontWeight: FontWeight.w700,
+                          fontSize: 13, color: _kInk))),
+                ]),
+                Text(_timeAgo(post['datePosted'] ?? ''),
+                    style: const TextStyle(fontSize: 10.5, color: _kInkMuted)),
+              ])),
+              // Urgency badge — always visible
               Container(
                   margin: const EdgeInsets.only(right: 6),
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
                   decoration: BoxDecoration(
                       color: urgencyColor.withOpacity(0.12),
-                      borderRadius: BorderRadius.circular(10),
+                      borderRadius: BorderRadius.circular(8),
                       border: Border.all(
                           color: urgencyColor.withOpacity(0.40), width: 1)),
-                  child: Text(urgency, style: TextStyle(fontSize: 10,
-                      fontWeight: FontWeight.w800, color: urgencyColor))),
-            ],
-            // Status badge
-            GestureDetector(
-              onTap: isOwner
-                  ? () => _toggleStatus(post['id'], post['status']) : null,
-              child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 300),
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                    Icon(
+                        urgency == 'High'   ? Icons.arrow_upward_rounded
+                            : urgency == 'Medium' ? Icons.remove_rounded
+                            : Icons.arrow_downward_rounded,
+                        size: 9, color: urgencyColor),
+                    const SizedBox(width: 3),
+                    Text(urgency, style: TextStyle(fontSize: 9.5,
+                        fontWeight: FontWeight.w800, color: urgencyColor)),
+                  ])),
+              // Status badge
+              Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
                   decoration: BoxDecoration(
                     gradient: isOpen
                         ? const LinearGradient(
                         colors: [Color(0xFFFCE7F3), Color(0xFFFBCFE8)])
                         : const LinearGradient(
                         colors: [Color(0xFFD1FAE5), Color(0xFFA7F3D0)]),
-                    borderRadius: BorderRadius.circular(12),
+                    borderRadius: BorderRadius.circular(10),
                     border: Border.all(
                         color: isOpen
                             ? _kBlush.withOpacity(0.40)
                             : _kMint.withOpacity(0.40), width: 1),
                   ),
-                  child: Text(post['status'], style: TextStyle(fontSize: 10.5,
+                  child: Text(post['status'], style: TextStyle(fontSize: 10,
                       fontWeight: FontWeight.w800,
-                      color: isOpen ? const Color(0xFF9D174D)
+                      color: isOpen
+                          ? const Color(0xFF9D174D)
                           : const Color(0xFF065F46)))),
+            ]),
+
+            const SizedBox(height: 9),
+
+            // ── Title ──
+            Text(post['title'] ?? '', style: TextStyle(
+                fontWeight: FontWeight.w800, fontSize: 14.5,
+                color: isOpen ? _kInk : _kInkLight,
+                letterSpacing: -0.2)),
+            const SizedBox(height: 4),
+
+            // ── Description preview ──
+            Text(
+              (post['description'] ?? '').length > 90
+                  ? '${(post['description'] as String).substring(0, 90)}...'
+                  : post['description'] ?? '',
+              style: TextStyle(fontSize: 12.5,
+                  color: isOpen ? _kInkLight : _kInkMuted, height: 1.4),
             ),
-          ]),
-          const SizedBox(height: 10),
-          Text(post['title'] ?? '', style: const TextStyle(
-              fontWeight: FontWeight.w800, fontSize: 15,
-              color: _kInk, letterSpacing: -0.2)),
-          const SizedBox(height: 4),
-          Text(
-            (post['description'] ?? '').length > 100
-                ? '${(post['description'] as String).substring(0, 100)}...'
-                : post['description'] ?? '',
-            style: const TextStyle(fontSize: 13, color: _kInkLight, height: 1.45),
-          ),
-          // Post image
-          if ((post['imageUrl'] as String?) != null &&
-              (post['imageUrl'] as String).isNotEmpty) ...[
+
             const SizedBox(height: 10),
-            GestureDetector(
-              onTap: () => _openFullScreenImage(context, post['imageUrl'] as String),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(14),
-                child: Stack(children: [
-                  Image.network(post['imageUrl'] as String,
-                    width: double.infinity, height: 180, fit: BoxFit.cover,
-                    loadingBuilder: (_, child, p) => p == null ? child
-                        : Container(width: double.infinity, height: 180,
-                        decoration: BoxDecoration(color: _kVioletSoft,
-                            borderRadius: BorderRadius.circular(14)),
-                        child: Center(child: CircularProgressIndicator(
-                            color: _kViolet,
-                            value: p.expectedTotalBytes != null
-                                ? p.cumulativeBytesLoaded /
-                                p.expectedTotalBytes! : null))),
-                    errorBuilder: (_, __, ___) => Container(height: 60,
-                        decoration: BoxDecoration(color: _kVioletSoft,
-                            borderRadius: BorderRadius.circular(14)),
-                        child: const Center(child: Icon(
-                            Icons.broken_image_outlined, color: _kVioletLight))),
-                  ),
-                  Positioned(bottom: 8, right: 8,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                      decoration: BoxDecoration(
-                          color: Colors.black.withOpacity(0.45),
-                          borderRadius: BorderRadius.circular(8)),
-                      child: const Row(mainAxisSize: MainAxisSize.min, children: [
-                        Icon(Icons.fullscreen_rounded, color: Colors.white, size: 14),
-                        SizedBox(width: 3),
-                        Text("View", style: TextStyle(color: Colors.white,
-                            fontSize: 10, fontWeight: FontWeight.w600)),
-                      ]),
-                    ),
-                  ),
-                ]),
-              ),
-            ),
-          ],
-          const SizedBox(height: 10),
-          Row(children: [
-            _chip(isHelpReq ? Icons.help_outline_rounded
-                : Icons.lightbulb_outline_rounded,
+
+            // ── Category + type chips ──
+            Row(children: [
+              _chip(
+                isHelpReq ? Icons.help_outline_rounded
+                    : Icons.lightbulb_outline_rounded,
                 post['postType'],
                 isHelpReq ? _kSkySoft : _kMintSoft,
-                isHelpReq ? _kSky : _kMint),
-            const SizedBox(width: 6),
-            _chip(Icons.label_outline_rounded, post['category'],
-                _kVioletSoft, _kVioletLight),
-            const SizedBox(width: 6),
-            GestureDetector(
-              onTap: () => CommentsModal.show(context,
-                  postId: post['id'], localUserId: widget.localUserId,
-                  postTitle: post['title'] ?? ''),
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                decoration: BoxDecoration(
-                  gradient: const LinearGradient(
-                      colors: [Color(0xFFEDE9FE), Color(0xFFDDD6FE)]),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: _kViolet.withOpacity(0.25), width: 1),
-                ),
-                child: const Row(mainAxisSize: MainAxisSize.min, children: [
-                  Icon(Icons.comment_outlined, color: _kViolet, size: 13),
-                  SizedBox(width: 4),
-                  Text("Reply", style: TextStyle(fontSize: 11,
-                      color: _kViolet, fontWeight: FontWeight.w700)),
-                ]),
+                isHelpReq ? _kSky     : _kMint,
               ),
-            ),
-            const Spacer(),
-            if (isOwner) ...[
-              GestureDetector(
-                  onTap: () => _goToCreate(existingPost: post),
-                  child: _iconBtn(Icons.edit_rounded, _kSkySoft, _kSky)),
               const SizedBox(width: 6),
+              _chip(Icons.label_outline_rounded, post['category'],
+                  _kVioletSoft, _kVioletLight),
+              const SizedBox(width: 6),
+              // ── Comment count — always visible, tap to open ──
+              Builder(builder: (_) {
+                final count = post['commentCount'] as int? ?? 0;
+                final hasComments = count > 0;
+                return GestureDetector(
+                  onTap: () => CommentsModal.show(context,
+                      postId:      post['id'],
+                      localUserId: widget.localUserId,
+                      postTitle:   post['title'] ?? ''),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 10, vertical: 5),
+                    decoration: BoxDecoration(
+                      gradient: hasComments
+                          ? const LinearGradient(
+                          colors: [Color(0xFF7B6CF6), Color(0xFFA78BFA)],
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight)
+                          : null,
+                      color: hasComments ? null : Colors.white,
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(
+                          color: hasComments
+                              ? _kViolet.withOpacity(0.0)
+                              : _kBorderGlass,
+                          width: 1.2),
+                      boxShadow: hasComments ? [BoxShadow(
+                          color: _kViolet.withOpacity(0.22),
+                          blurRadius: 8, offset: const Offset(0, 3))] : [],
+                    ),
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      Icon(
+                          hasComments
+                              ? Icons.chat_bubble_rounded
+                              : Icons.chat_bubble_outline_rounded,
+                          color: hasComments ? Colors.white : _kInkMuted,
+                          size: 12),
+                      const SizedBox(width: 5),
+                      Text(
+                          hasComments
+                              ? '$count ${count == 1 ? 'comment' : 'comments'}'
+                              : 'Comment',
+                          style: TextStyle(
+                              fontSize: 10.5,
+                              fontWeight: FontWeight.w700,
+                              color: hasComments ? Colors.white : _kInkMuted)),
+                    ]),
+                  ),
+                );
+              }),
+              const Spacer(),
+              // Owner edit/delete buttons
+              if (isOwner) ...[
+                GestureDetector(
+                    onTap: () => _goToCreate(existingPost: post),
+                    child: _iconBtn(Icons.edit_rounded, _kSkySoft, _kSky)),
+                const SizedBox(width: 6),
+                GestureDetector(
+                    onTap: () => _deletePost(post['id']),
+                    child: _iconBtn(Icons.delete_rounded, _kBlushSoft, _kBlush)),
+              ],
+            ]),
+
+            // ── Image thumbnail (if any) ──
+            if ((post['imageUrl'] as String?) != null &&
+                (post['imageUrl'] as String).isNotEmpty) ...[
+              const SizedBox(height: 10),
               GestureDetector(
-                  onTap: () => _deletePost(post['id']),
-                  child: _iconBtn(Icons.delete_rounded, _kBlushSoft, _kBlush)),
+                onTap: () => _openFullScreenImage(
+                    context, post['imageUrl'] as String),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(12),
+                  child: Stack(children: [
+                    Image.network(post['imageUrl'] as String,
+                        width: double.infinity, height: 160,
+                        fit: BoxFit.cover,
+                        loadingBuilder: (_, c, p) => p == null ? c
+                            : Container(height: 160,
+                            color: _kVioletSoft,
+                            child: const Center(child:
+                            CircularProgressIndicator(color: _kViolet))),
+                        errorBuilder: (_, __, ___) => Container(height: 56,
+                            color: _kVioletSoft,
+                            child: const Center(child: Icon(
+                                Icons.broken_image_outlined,
+                                color: _kVioletLight)))),
+                    Positioned(bottom: 8, right: 8,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 7, vertical: 3),
+                          decoration: BoxDecoration(
+                              color: Colors.black.withOpacity(0.45),
+                              borderRadius: BorderRadius.circular(7)),
+                          child: const Row(mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.fullscreen_rounded,
+                                    color: Colors.white, size: 13),
+                                SizedBox(width: 2),
+                                Text("View", style: TextStyle(color: Colors.white,
+                                    fontSize: 9.5, fontWeight: FontWeight.w600)),
+                              ]),
+                        )),
+                  ]),
+                ),
+              ),
             ],
           ]),
-        ]),
+        ),
       ),
     );
   }
 
+  // ── Avatar widget: profile photo > initial fallback ───────────────────────
+  Widget _buildAvatar(String? photoUrl, String initial, double size) {
+    return Container(
+      width: size, height: size,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        gradient: const LinearGradient(
+            colors: [_kViolet, _kVioletLight],
+            begin: Alignment.topLeft, end: Alignment.bottomRight),
+        boxShadow: [BoxShadow(color: _kViolet.withOpacity(0.28), blurRadius: 6)],
+        image: photoUrl != null && photoUrl.isNotEmpty
+            ? DecorationImage(
+            image: NetworkImage(photoUrl), fit: BoxFit.cover)
+            : null,
+      ),
+      child: photoUrl == null || photoUrl.isEmpty
+          ? Center(child: Text(initial, style: TextStyle(
+          color: Colors.white,
+          fontSize: size * 0.38,
+          fontWeight: FontWeight.w800)))
+          : null,
+    );
+  }
+
   Widget _chip(IconData icon, String label, Color bg, Color fg) => Container(
-    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-    decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(10)),
+    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
+    decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(9)),
     child: Row(mainAxisSize: MainAxisSize.min, children: [
-      Icon(icon, size: 11, color: fg), const SizedBox(width: 4),
-      Text(label, style: TextStyle(fontSize: 10.5,
+      Icon(icon, size: 10, color: fg), const SizedBox(width: 3),
+      Text(label, style: TextStyle(fontSize: 10,
           fontWeight: FontWeight.w700, color: fg)),
     ]),
   );
@@ -845,6 +1000,399 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
     padding: const EdgeInsets.all(7),
     decoration: BoxDecoration(color: bg, shape: BoxShape.circle,
         border: Border.all(color: fg.withOpacity(0.30), width: 1)),
-    child: Icon(icon, color: fg, size: 15),
+    child: Icon(icon, color: fg, size: 14),
   );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  Post Detail Floating Card
+// ══════════════════════════════════════════════════════════════════════════════
+class PostDetailCard extends StatelessWidget {
+  final Map<String, dynamic> post;
+  final int? localUserId;
+  final void Function(int id, String current) onToggleStatus;
+  final void Function(int id) onDelete;
+  final void Function(Map<String, dynamic> post) onEdit;
+
+  const PostDetailCard({
+    required this.post,
+    required this.localUserId,
+    required this.onToggleStatus,
+    required this.onDelete,
+    required this.onEdit,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final isOpen    = post['status'] == 'Open';
+    final isHelpReq = post['postType'] == 'Help Request';
+    final isOwner   = localUserId != null && post['userId'] == localUserId;
+    final urgency   = post['urgencyLevel'] as String? ?? 'Low';
+    final photoUrl  = post['userProfilePic'] as String?;
+    final initials  = (post['userFullName'] as String? ?? '?').isNotEmpty
+        ? (post['userFullName'] as String)[0].toUpperCase() : '?';
+    final urgencyColor = urgency == 'High'   ? _kBlush
+        : urgency == 'Medium' ? const Color(0xFFFCD34D) : _kMint;
+
+    // Resolver info (only when Resolved)
+    final resolverName = post['resolvedByName'] as String?;
+    final resolverId   = post['resolvedById']   as int?;
+
+    return Dialog(
+      backgroundColor: Colors.transparent,
+      insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 40),
+      child: Container(
+        constraints: BoxConstraints(
+            maxHeight: MediaQuery.of(context).size.height * 0.80),
+        decoration: BoxDecoration(
+          color: const Color(0xFFF5F2FF),
+          borderRadius: BorderRadius.circular(28),
+          boxShadow: [
+            BoxShadow(color: _kViolet.withOpacity(0.20),
+                blurRadius: 30, offset: const Offset(0, 10)),
+            BoxShadow(color: Colors.black.withOpacity(0.10),
+                blurRadius: 14, offset: const Offset(0, 4)),
+          ],
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(28),
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(22),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+
+                  // ── Header: avatar + name + close ──
+                  Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    _buildAvatar(photoUrl, initials, 46),
+                    const SizedBox(width: 12),
+                    Expanded(child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      // Tappable author name → ProfileScreen
+                      GestureDetector(
+                        onTap: () {
+                          final authorId = post['userId'] as int?;
+                          if (authorId != null) {
+                            Navigator.pop(context);
+                            Navigator.of(context).push(MaterialPageRoute(
+                              builder: (_) => ProfileScreen(localUserId: authorId, isOwnProfile: false),
+                            ));
+                          }
+                        },
+                        child: Row(children: [
+                          Text(post['userFullName'] ?? 'Unknown',
+                              style: const TextStyle(fontWeight: FontWeight.w800,
+                                  fontSize: 14.5, color: _kViolet)),
+                          const SizedBox(width: 4),
+                          const Icon(Icons.open_in_new_rounded,
+                              size: 12, color: _kVioletLight),
+                        ]),
+                      ),
+                      const SizedBox(height: 3),
+                      _timeAgoText(post['datePosted'] ?? ''),
+                    ])),
+                    // Owner three-dot menu
+                    if (isOwner)
+                      OwnerMenu(post: post, onEdit: onEdit, onDelete: onDelete,
+                          onToggle: onToggleStatus),
+                    // Non-owner: just close
+                    if (!isOwner)
+                      GestureDetector(
+                        onTap: () => Navigator.pop(context),
+                        child: Container(
+                            width: 32, height: 32,
+                            decoration: BoxDecoration(
+                                color: _kVioletSoft, shape: BoxShape.circle),
+                            child: const Icon(Icons.close_rounded,
+                                color: _kViolet, size: 17)),
+                      ),
+                  ]),
+
+                  const SizedBox(height: 16),
+
+                  // ── Badges row ──
+                  Wrap(spacing: 6, runSpacing: 6, children: [
+                    _badge(
+                        isHelpReq ? Icons.help_outline_rounded
+                            : Icons.lightbulb_outline_rounded,
+                        post['postType'],
+                        isHelpReq ? _kSky : _kMint),
+                    _badge(Icons.label_outline_rounded,
+                        post['category'], _kVioletLight),
+                    _badge(null, urgency, urgencyColor,
+                        bg: urgencyColor.withOpacity(0.12)),
+                    _badge(null, post['status'],
+                        isOpen ? const Color(0xFF9D174D) : const Color(0xFF065F46),
+                        bg: isOpen
+                            ? const Color(0xFFFCE7F3) : const Color(0xFFD1FAE5)),
+                  ]),
+
+                  const SizedBox(height: 14),
+
+                  // ── Title ──
+                  Text(post['title'] ?? '', style: const TextStyle(
+                      fontWeight: FontWeight.w900, fontSize: 17,
+                      color: _kInk, letterSpacing: -0.3)),
+                  const SizedBox(height: 8),
+
+                  // ── Description ──
+                  Text(post['description'] ?? '', style: const TextStyle(
+                      fontSize: 13.5, color: _kInkLight, height: 1.55)),
+
+                  // ── Image ──
+                  if ((post['imageUrl'] as String?) != null &&
+                      (post['imageUrl'] as String).isNotEmpty) ...[
+                    const SizedBox(height: 14),
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(14),
+                      child: Image.network(post['imageUrl'] as String,
+                          width: double.infinity, fit: BoxFit.cover,
+                          loadingBuilder: (_, c, p) => p == null ? c
+                              : Container(height: 160, color: _kVioletSoft,
+                              child: const Center(child:
+                              CircularProgressIndicator(color: _kViolet))),
+                          errorBuilder: (_, __, ___) => const SizedBox.shrink()),
+                    ),
+                  ],
+
+                  // ── Resolved by (tappable) ──
+                  if (!isOpen) ...[
+                    const SizedBox(height: 14),
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: _kMint.withOpacity(0.08),
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(
+                            color: _kMint.withOpacity(0.30), width: 1),
+                      ),
+                      child: Row(children: [
+                        const Icon(Icons.check_circle_rounded,
+                            color: _kMint, size: 16),
+                        const SizedBox(width: 8),
+                        const Text("Resolved",
+                            style: TextStyle(color: _kMint,
+                                fontWeight: FontWeight.w700, fontSize: 12.5)),
+                        if (resolverName != null) ...[
+                          const Text(" by ", style: TextStyle(
+                              color: _kInkMuted, fontSize: 12.5)),
+                          // Tappable resolver → their profile
+                          GestureDetector(
+                            onTap: resolverId != null ? () {
+                              Navigator.pop(context);
+                              Navigator.of(context).push(MaterialPageRoute(
+                                builder: (_) =>
+                                    ProfileScreen(localUserId: resolverId,
+                                        isOwnProfile: false),
+                              ));
+                            } : null,
+                            child: Row(mainAxisSize: MainAxisSize.min, children: [
+                              Text(resolverName, style: const TextStyle(
+                                  color: _kViolet, fontWeight: FontWeight.w800,
+                                  fontSize: 12.5,
+                                  decoration: TextDecoration.underline,
+                                  decorationColor: _kViolet)),
+                              const SizedBox(width: 3),
+                              const Icon(Icons.open_in_new_rounded,
+                                  size: 11, color: _kVioletLight),
+                            ]),
+                          ),
+                        ],
+                      ]),
+                    ),
+                  ],
+
+                  const SizedBox(height: 18),
+
+                  // ── Reply button ──
+                  SizedBox(
+                    width: double.infinity,
+                    child: GestureDetector(
+                      onTap: () {
+                        Navigator.pop(context);
+                        CommentsModal.show(context,
+                            postId:      post['id'],
+                            localUserId: localUserId,
+                            postTitle:   post['title'] ?? '');
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(vertical: 13),
+                        decoration: BoxDecoration(
+                          gradient: const LinearGradient(
+                              colors: [_kViolet, _kVioletLight, Color(0xFFEC4899)],
+                              begin: Alignment.centerLeft,
+                              end: Alignment.centerRight),
+                          borderRadius: BorderRadius.circular(18),
+                          boxShadow: [BoxShadow(
+                              color: _kViolet.withOpacity(0.30),
+                              blurRadius: 12, offset: const Offset(0, 4))],
+                        ),
+                        child: const Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(Icons.chat_bubble_outline_rounded,
+                                  color: Colors.white, size: 16),
+                              SizedBox(width: 8),
+                              Text("View & Reply",
+                                  style: TextStyle(color: Colors.white,
+                                      fontWeight: FontWeight.w700, fontSize: 14)),
+                            ]),
+                      ),
+                    ),
+                  ),
+
+                  // ── Owner toggle status button ──
+                  if (isOwner) ...[
+                    const SizedBox(height: 10),
+                    SizedBox(
+                      width: double.infinity,
+                      child: GestureDetector(
+                        onTap: () =>
+                            onToggleStatus(post['id'], post['status']),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(vertical: 13),
+                          decoration: BoxDecoration(
+                            color: isOpen
+                                ? _kMint.withOpacity(0.10)
+                                : _kBlush.withOpacity(0.10),
+                            borderRadius: BorderRadius.circular(18),
+                            border: Border.all(
+                                color: isOpen
+                                    ? _kMint.withOpacity(0.40)
+                                    : _kBlush.withOpacity(0.40)),
+                          ),
+                          child: Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(isOpen
+                                    ? Icons.check_circle_outline_rounded
+                                    : Icons.restart_alt_rounded,
+                                    color: isOpen ? _kMint : _kBlush, size: 16),
+                                const SizedBox(width: 8),
+                                Text(isOpen ? "Mark as Resolved" : "Reopen Post",
+                                    style: TextStyle(
+                                        color: isOpen ? _kMint : _kBlush,
+                                        fontWeight: FontWeight.w700, fontSize: 14)),
+                              ]),
+                        ),
+                      ),
+                    ),
+                  ],
+                ]),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAvatar(String? photoUrl, String initial, double size) =>
+      Container(
+        width: size, height: size,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          gradient: const LinearGradient(
+              colors: [_kViolet, _kVioletLight],
+              begin: Alignment.topLeft, end: Alignment.bottomRight),
+          image: photoUrl != null && photoUrl.isNotEmpty
+              ? DecorationImage(
+              image: NetworkImage(photoUrl), fit: BoxFit.cover)
+              : null,
+        ),
+        child: photoUrl == null || photoUrl.isEmpty
+            ? Center(child: Text(initial, style: TextStyle(
+            color: Colors.white, fontSize: size * 0.38,
+            fontWeight: FontWeight.w800))) : null,
+      );
+
+  Widget _badge(IconData? icon, String label, Color fg,
+      {Color? bg}) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+      decoration: BoxDecoration(
+          color: bg ?? fg.withOpacity(0.10),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: fg.withOpacity(0.30), width: 1)),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        if (icon != null) ...[
+          Icon(icon, size: 11, color: fg), const SizedBox(width: 4),
+        ],
+        Text(label, style: TextStyle(fontSize: 10.5,
+            fontWeight: FontWeight.w700, color: fg)),
+      ]),
+    );
+  }
+
+  Widget _timeAgoText(String dateStr) {
+    try {
+      final dt   = DateTime.parse(dateStr);
+      final diff = DateTime.now().difference(dt);
+      String text;
+      if (diff.inMinutes < 1)      text = 'Just now';
+      else if (diff.inHours < 1)   text = '${diff.inMinutes}m ago';
+      else if (diff.inDays < 1)    text = '${diff.inHours}h ago';
+      else if (diff.inDays < 7)    text = '${diff.inDays}d ago';
+      else text = '${dt.day}/${dt.month}/${dt.year}';
+      return Text(text, style: const TextStyle(
+          fontSize: 11, color: _kInkMuted));
+    } catch (_) { return const SizedBox.shrink(); }
+  }
+}
+
+// ── Owner three-dot menu in post detail ───────────────────────────────────────
+class OwnerMenu extends StatelessWidget {
+  final Map<String, dynamic> post;
+  final void Function(Map<String, dynamic>) onEdit;
+  final void Function(int) onDelete;
+  final void Function(int, String) onToggle;
+
+  const OwnerMenu({
+    required this.post,
+    required this.onEdit,
+    required this.onDelete,
+    required this.onToggle,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return PopupMenuButton<String>(
+      icon: Container(
+          width: 32, height: 32,
+          decoration: BoxDecoration(
+              color: _kVioletSoft, shape: BoxShape.circle),
+          child: const Icon(Icons.more_horiz_rounded,
+              color: _kViolet, size: 18)),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      elevation: 8,
+      color: Colors.white,
+      offset: const Offset(0, 38),
+      itemBuilder: (_) => [
+        _menuItem('edit',   Icons.edit_rounded,         'Edit Post',   _kSky),
+        _menuItem('toggle', Icons.sync_alt_rounded,
+            post['status'] == 'Open' ? 'Mark Resolved' : 'Reopen', _kMint),
+        _menuItem('delete', Icons.delete_outline_rounded,
+            'Delete Post', _kBlush),
+      ],
+      onSelected: (val) {
+        if (val == 'edit')   { onEdit(post); }
+        if (val == 'toggle') { onToggle(post['id'], post['status']); }
+        if (val == 'delete') { onDelete(post['id']); }
+      },
+    );
+  }
+
+  PopupMenuItem<String> _menuItem(String value, IconData icon,
+      String label, Color color) {
+    return PopupMenuItem(
+      value: value,
+      child: Row(children: [
+        Container(width: 32, height: 32,
+            decoration: BoxDecoration(
+                color: color.withOpacity(0.10),
+                borderRadius: BorderRadius.circular(8)),
+            child: Icon(icon, color: color, size: 16)),
+        const SizedBox(width: 10),
+        Text(label, style: TextStyle(color: _kInk,
+            fontWeight: FontWeight.w600, fontSize: 13)),
+      ]),
+    );
+  }
 }
