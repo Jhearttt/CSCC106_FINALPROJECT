@@ -3,7 +3,7 @@ import 'package:sqflite/sqflite.dart';
 class DatabaseHelper {
   static const _dbName    = 'campusaid.db';
   // v1→imageUrl, v2→gamification, v3→skillCards, v4→threads+notifications+commentCount
-  static const _dbVersion = 4;
+  static const _dbVersion = 5; // v5 → isAccepted on comments
 
   Database? _db;
 
@@ -65,6 +65,7 @@ class DatabaseHelper {
             userId           INTEGER NOT NULL,
             comment          TEXT    NOT NULL,
             parentCommentId  INTEGER,
+            isAccepted       INTEGER NOT NULL DEFAULT 0,
             synced           INTEGER NOT NULL DEFAULT 0,
             dateCommented    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (postId)          REFERENCES posts(id)    ON DELETE CASCADE,
@@ -151,6 +152,10 @@ class DatabaseHelper {
               FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE
             )
           """);
+        }
+        if (oldVersion < 5) {
+          await db.execute(
+              'ALTER TABLE comments ADD COLUMN isAccepted INTEGER NOT NULL DEFAULT 0');
         }
       },
     );
@@ -468,7 +473,7 @@ class DatabaseHelper {
     // All comments flat, joined with user info
     final flat = await db.rawQuery("""
       SELECT c.id, c.comment, c.synced, c.dateCommented,
-             c.parentCommentId,
+             c.parentCommentId, c.isAccepted,
              u.id       AS userId,
              u.fullName AS userFullName,
              u.userName AS userUserName,
@@ -522,8 +527,58 @@ class DatabaseHelper {
     return result;
   }
 
-  // ══════════════════════════════════════════════════════════════════════════
-  //  NOTIFICATIONS
+  // ── Accept Solution ───────────────────────────────────────────────────────
+
+  /// Marks a comment as the accepted solution (StackOverflow-style).
+  ///
+  /// Rules enforced:
+  ///   1. Only the post owner can accept (enforced in UI + here).
+  ///   2. Only ONE accepted solution per post.
+  ///   3. Helper cannot accept their own comment.
+  ///
+  /// On success:
+  ///   - comment.isAccepted = 1
+  ///   - post.status = 'Resolved' + resolvedBy/resolvedAt set
+  ///   - helper gets +20 points, helpCount++, streak updated
+  ///   - helper's skill card for post category updated
+  ///
+  /// Returns true on success, false if a rule blocks it.
+  Future<bool> acceptSolution({
+    required int    commentId,
+    required int    postId,
+    required int    helperId,
+    required int    postOwnerId,
+    required String category,
+  }) async {
+    final db = await _database();
+
+    // Rule 3 — cannot accept your own comment
+    if (helperId == postOwnerId) return false;
+
+    // Rule 2 — only one accepted solution per post
+    final already = await db.rawQuery(
+        'SELECT COUNT(*) AS c FROM comments WHERE postId = ? AND isAccepted = 1',
+        [postId]);
+    if ((already.first['c'] as int? ?? 0) > 0) return false;
+
+    // Mark comment accepted
+    await db.update('comments', {'isAccepted': 1},
+        where: 'id = ?', whereArgs: [commentId]);
+
+    // Resolve the post and record who resolved it
+    final now = DateTime.now().toIso8601String();
+    await db.update('posts', {
+      'status':     'Resolved',
+      'resolvedBy': helperId,
+      'resolvedAt': now,
+      'synced':     0,
+    }, where: 'id = ?', whereArgs: [postId]);
+
+    // Award +20 points, update streak, update skill card
+    await addPoints(helperId, 20, category);
+
+    return true;
+  }
   // ══════════════════════════════════════════════════════════════════════════
 
   /// Insert a notification for the post owner when someone comments.

@@ -57,6 +57,8 @@ class SyncService {
   // ══════════════════════════════════════════════════════════════════════════
 
   /// Upload a local image file to Firebase Storage.
+  /// Returns the public download URL, or null if upload fails / offline.
+
 
   // ══════════════════════════════════════════════════════════════════════════
   //  POSTS — write
@@ -302,8 +304,48 @@ class SyncService {
     return result;
   }
 
-  // ══════════════════════════════════════════════════════════════════════════
-  //  OFFLINE QUEUE FLUSH
+  /// Accept a comment as the solution.
+  /// Syncs isAccepted flag + post Resolved status to Firestore.
+  /// Returns true on success, false if a rule blocked it.
+  Future<bool> acceptSolution({
+    required int    commentId,
+    required int    postId,
+    required int    helperId,
+    required int    postOwnerId,
+    required String category,
+  }) async {
+    final success = await _db.acceptSolution(
+      commentId:   commentId,
+      postId:      postId,
+      helperId:    helperId,
+      postOwnerId: postOwnerId,
+      category:    category,
+    );
+    if (!success) return false;
+
+    if (ConnectivityService.instance.isOnline) {
+      try {
+        // Mark comment accepted in Firestore
+        await _firestore.collection(_kComments)
+            .doc(commentId.toString())
+            .update({'isAccepted': 1});
+
+        // Resolve post in Firestore
+        await _firestore.collection(_kPosts)
+            .doc(postId.toString())
+            .update({
+          'status':     'Resolved',
+          'resolvedBy': helperId,
+          'resolvedAt': DateTime.now().toIso8601String(),
+          'updatedAt':  FieldValue.serverTimestamp(),
+        });
+        await _db.markPostSynced(postId);
+      } catch (e) {
+        developer.log('Firestore acceptSolution failed: $e', name: 'SyncService');
+      }
+    }
+    return true;
+  }
   // ══════════════════════════════════════════════════════════════════════════
 
   /// Push all unsynced local rows to Firestore.

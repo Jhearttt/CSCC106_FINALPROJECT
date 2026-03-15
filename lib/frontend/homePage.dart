@@ -1,7 +1,9 @@
+import 'package:final_project/backend/databaseHelper.dart';
 import 'package:final_project/frontend/communityFeedScreen.dart';
 import 'package:final_project/frontend/createPostScreen.dart';
 import 'package:final_project/frontend/dashboard.dart';
 import 'package:final_project/frontend/loginScreen.dart';
+import 'package:final_project/frontend/notificationsScreen.dart';
 import 'package:final_project/frontend/profileScreen.dart';
 import 'package:final_project/GoogleServices/auth_service.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -40,7 +42,7 @@ const kVioletGrad = LinearGradient(
 // ─── Nav tab index constants (per SRS: Dashboard, Community, Create Post, Profile)
 const _tabDashboard  = 0;
 const _tabCommunity  = 1;
-const _tabCreate     = 2;
+const _tabNotif   = 2;
 const _tabProfile    = 3;
 
 class Homepage extends StatelessWidget {
@@ -87,9 +89,9 @@ class _HomePageHomeState extends State<HomePageHome>
 
   // ── Create Post tab launches as a full screen then returns to Community ──
   void _handleTabTap(int index) {
-    if (index == _tabCreate) {
+    if (index == _tabNotif) {
       Navigator.of(context).push(MaterialPageRoute(
-        builder: (_) => CreatePostScreen(localUserId: widget.localUserId),
+        builder: (_) => NotificationsScreen(localUserId: widget.localUserId),
       )).then((_) {
         // After returning from create, switch to Community Feed
         setState(() => _tab = _tabCommunity);
@@ -161,9 +163,6 @@ class _HomePageHomeState extends State<HomePageHome>
                     fontWeight: FontWeight.w700, letterSpacing: 0.2)),
               ),
               const SizedBox(width: 8),
-              _glassBtn(icon: Icons.notifications_outlined,
-                  bg: kAmberSoft, iconColor: const Color(0xFFD97706), badge: true),
-              const SizedBox(width: 8),
               GestureDetector(
                 onTap: () async {
                   await AuthService().signOut();
@@ -199,7 +198,7 @@ class _HomePageHomeState extends State<HomePageHome>
     switch (tab) {
       case _tabDashboard: return '✦  Dashboard';
       case _tabCommunity: return '✦  Community';
-      case _tabCreate:    return '✦  Create Post';
+      case _tabNotif:    return '✦  Notifications';
       case _tabProfile:   return '✦  Profile';
       default:            return '✦  PeerAid';
     }
@@ -252,6 +251,7 @@ class _HomePageHomeState extends State<HomePageHome>
             children: [
               _navPill(_tabDashboard,  Icons.dashboard_rounded,    "Dashboard"),
               _navPill(_tabCommunity,  Icons.people_alt_rounded,   "Community"),
+              _navPill(_tabNotif,     Icons.notifications_none_outlined, "Notification"),
               _navPill(_tabProfile,    Icons.person_rounded,       "Profile"),
             ],
           ),
@@ -263,7 +263,7 @@ class _HomePageHomeState extends State<HomePageHome>
   Widget _navPill(int index, IconData icon, String label) {
     final active = _tab == index;
     // Create Post pill uses a distinct blush accent to stand out
-    final isCreate = index == _tabCreate;
+    final isCreate = index == _tabNotif;
     final activeGrad = isCreate
         ? const LinearGradient(colors: [Color(0xFFEC4899), kBlush],
         begin: Alignment.topLeft, end: Alignment.bottomRight)
@@ -362,27 +362,72 @@ class _HomePageHomeState extends State<HomePageHome>
         Expanded(child: ListView(
           padding: const EdgeInsets.symmetric(horizontal: 16),
           children: [
-            _drawerTile(Icons.home_rounded,       "Home",
-                kVioletSoft, kViolet, () => Navigator.pop(context)),
-            _drawerTile(Icons.dashboard_rounded,  "Dashboard",
-                kSkySoft, kSky, () {
-                  Navigator.pop(context); setState(() => _tab = _tabDashboard);
-                }),
-            _drawerTile(Icons.people_alt_rounded, "Community Feed",
-                kMintSoft, kMint, () {
-                  Navigator.pop(context); setState(() => _tab = _tabCommunity);
-                }),
-            _drawerTile(Icons.edit_note_rounded,  "Create Post",
+
+            // ── Quick access section ──
+            Padding(
+              padding: const EdgeInsets.only(left: 4, bottom: 8),
+              child: Text("QUICK ACCESS", style: TextStyle(
+                  fontSize: 10, fontWeight: FontWeight.w800,
+                  color: kInkMuted, letterSpacing: 1.2)),
+            ),
+
+            _drawerTile(
+                Icons.notifications_rounded, "Notifications",
                 kAmberSoft, const Color(0xFFD97706), () {
-                  Navigator.pop(context); _handleTabTap(_tabCreate);
-                }),
-            _drawerTile(Icons.person_rounded,     "My Profile",
-                kBlushSoft, kBlush, () {
-                  Navigator.pop(context); setState(() => _tab = _tabProfile);
-                }),
+              Navigator.pop(context);
+              Navigator.push(context, MaterialPageRoute(
+                  builder: (_) => NotificationsScreen(
+                      localUserId: widget.localUserId)));
+            }),
+
+            _drawerTile(
+                Icons.emoji_events_rounded, "Leaderboard",
+                kVioletSoft, kViolet, () {
+              Navigator.pop(context);
+              // Jump to dashboard and scroll to leaderboard
+              setState(() => _tab = _tabDashboard);
+            }),
+
+            _drawerTile(
+                Icons.auto_awesome_rounded, "My Skill Cards",
+                kMintSoft, kMint, () {
+              Navigator.pop(context);
+              setState(() => _tab = _tabProfile);
+            }),
+
+            const SizedBox(height: 12),
+
+            // ── Stats section ──
+            Padding(
+              padding: const EdgeInsets.only(left: 4, bottom: 8),
+              child: Text("MY ACTIVITY", style: TextStyle(
+                  fontSize: 10, fontWeight: FontWeight.w800,
+                  color: kInkMuted, letterSpacing: 1.2)),
+            ),
+
+            _drawerStatRow(),
+
+            const SizedBox(height: 12),
+
+            // ── App section ──
+            Padding(
+              padding: const EdgeInsets.only(left: 4, bottom: 8),
+              child: Text("APP", style: TextStyle(
+                  fontSize: 10, fontWeight: FontWeight.w800,
+                  color: kInkMuted, letterSpacing: 1.2)),
+            ),
+
+            _drawerTile(
+                Icons.info_outline_rounded, "About PeerAid",
+                kSkySoft, kSky, () {
+              Navigator.pop(context);
+              _showAboutDialog();
+            }),
+
             const SizedBox(height: 8),
             Divider(color: kBorderGlass, thickness: 1.2),
             const SizedBox(height: 4),
+
             _drawerTile(Icons.logout_rounded, "Sign Out",
                 kBlushSoft, kBlush, () async {
                   Navigator.pop(context);
@@ -405,13 +450,182 @@ class _HomePageHomeState extends State<HomePageHome>
                   fontSize: 12, fontWeight: FontWeight.w800, letterSpacing: -0.3)),
             ),
             const Spacer(),
-            Text("© 2025", style: TextStyle(
+            Text("v1.0.0  © 2025", style: TextStyle(
                 color: kInkMuted.withOpacity(0.60), fontSize: 11)),
           ]),
         ),
       ]),
     );
   }
+
+  // ── Drawer activity stat row ──────────────────────────────────────────────
+  Widget _drawerStatRow() {
+    return FutureBuilder<Map<String, dynamic>?>(
+      future: widget.localUserId != null
+          ? DatabaseHelper().getUserById(widget.localUserId!) : null,
+      builder: (_, snap) {
+        final u       = snap.data;
+        final pts     = (u?['points']    as int? ?? 0);
+        final helped  = (u?['helpCount'] as int? ?? 0);
+        final streak  = (u?['streak']    as int? ?? 0);
+        return Container(
+          margin: const EdgeInsets.only(bottom: 8),
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+                colors: [Color(0xFFF5F3FF), Color(0xFFEEF2FF)],
+                begin: Alignment.topLeft, end: Alignment.bottomRight),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: kBorderGlass, width: 1.2),
+          ),
+          child: Row(children: [
+            _statPill('⭐', '$pts',    'pts'),
+            _vDivider(),
+            _statPill('🤝', '$helped', 'helped'),
+            _vDivider(),
+            _statPill('🔥', '$streak', 'streak'),
+          ]),
+        );
+      },
+    );
+  }
+
+  Widget _statPill(String emoji, String value, String label) =>
+      Expanded(child: Column(children: [
+        Text(emoji, style: const TextStyle(fontSize: 14)),
+        const SizedBox(height: 2),
+        Text(value, style: const TextStyle(
+            fontSize: 14, fontWeight: FontWeight.w800, color: kInk)),
+        Text(label, style: TextStyle(
+            fontSize: 9.5, color: kInkMuted, fontWeight: FontWeight.w600)),
+      ]));
+
+  Widget _vDivider() => Container(
+      width: 1, height: 32, color: kBorderGlass);
+
+  // ── About dialog ──────────────────────────────────────────────────────────
+  void _showAboutDialog() {
+    showGeneralDialog(
+      context: context,
+      barrierDismissible: true,
+      barrierLabel: 'About',
+      barrierColor: Colors.black45,
+      transitionDuration: const Duration(milliseconds: 250),
+      transitionBuilder: (_, anim, __, child) {
+        final curve = CurvedAnimation(parent: anim, curve: Curves.easeOutCubic);
+        return ScaleTransition(
+            scale: Tween<double>(begin: 0.88, end: 1.0).animate(curve),
+            child: FadeTransition(opacity: curve, child: child));
+      },
+      pageBuilder: (ctx, _, __) => Dialog(
+        backgroundColor: Colors.transparent,
+        insetPadding: const EdgeInsets.symmetric(horizontal: 36),
+        child: Container(
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(28),
+            boxShadow: [BoxShadow(color: kViolet.withOpacity(0.18),
+                blurRadius: 24, offset: const Offset(0, 8))],
+          ),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            // Header
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(22),
+              decoration: const BoxDecoration(
+                gradient: LinearGradient(
+                    colors: [Color(0xFF7B6CF6), Color(0xFFA78BFA),
+                      Color(0xFFEC4899)],
+                    begin: Alignment.topLeft, end: Alignment.bottomRight),
+                borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+              ),
+              child: Column(children: [
+                Container(
+                  width: 60, height: 60,
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.20),
+                    borderRadius: BorderRadius.circular(18),
+                    border: Border.all(
+                        color: Colors.white.withOpacity(0.50), width: 2),
+                  ),
+                  child: const Center(child: Text("🎓",
+                      style: TextStyle(fontSize: 28))),
+                ),
+                const SizedBox(height: 12),
+                const Text("PeerAid", style: TextStyle(
+                    color: Colors.white, fontSize: 22,
+                    fontWeight: FontWeight.w900, letterSpacing: -0.5)),
+                const SizedBox(height: 4),
+                Text("Version 1.0.0", style: TextStyle(
+                    color: Colors.white.withOpacity(0.70), fontSize: 12)),
+              ]),
+            ),
+            // Body
+            Padding(
+              padding: const EdgeInsets.all(22),
+              child: Column(children: [
+                const Text(
+                    "PeerAid is a campus peer-help platform that connects "
+                        "students who need help with those who have the skills "
+                        "to assist. Built to foster community, learning, and "
+                        "campus collaboration.",
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 13, color: Color(0xFF4B5563),
+                        height: 1.6)),
+                const SizedBox(height: 18),
+                // Feature pills
+                Wrap(spacing: 8, runSpacing: 8,
+                    alignment: WrapAlignment.center,
+                    children: [
+                      _featurePill("🤝 Peer Help",    kVioletSoft, kViolet),
+                      _featurePill("⭐ Reputation",   kAmberSoft,  const Color(0xFFD97706)),
+                      _featurePill("💬 Threads",      kSkySoft,    kSky),
+                      _featurePill("🔔 Notifications",kMintSoft,   kMint),
+                      _featurePill("🏆 Leaderboard",  kBlushSoft,  kBlush),
+                    ]),
+                const SizedBox(height: 20),
+                Divider(color: kBorderGlass),
+                const SizedBox(height: 12),
+                Text("© 2025 PeerAid · All rights reserved",
+                    style: TextStyle(fontSize: 11,
+                        color: kInkMuted.withOpacity(0.70))),
+                const SizedBox(height: 4),
+                GestureDetector(
+                  onTap: () => Navigator.pop(ctx),
+                  child: Container(
+                    margin: const EdgeInsets.only(top: 8),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 32, vertical: 12),
+                    decoration: BoxDecoration(
+                        gradient: const LinearGradient(
+                            colors: [kViolet, kVioletLight],
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight),
+                        borderRadius: BorderRadius.circular(20),
+                        boxShadow: [BoxShadow(
+                            color: kViolet.withOpacity(0.28),
+                            blurRadius: 10,
+                            offset: const Offset(0, 4))]),
+                    child: const Text("Close", style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w700, fontSize: 14)),
+                  ),
+                ),
+              ]),
+            ),
+          ]),
+        ),
+      ),
+    );
+  }
+
+  Widget _featurePill(String label, Color bg, Color fg) => Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+          color: bg, borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: fg.withOpacity(0.25))),
+      child: Text(label, style: TextStyle(fontSize: 11,
+          fontWeight: FontWeight.w700, color: fg)));
 
   Widget _drawerTile(IconData icon, String title, Color bg, Color fg,
       VoidCallback onTap) {

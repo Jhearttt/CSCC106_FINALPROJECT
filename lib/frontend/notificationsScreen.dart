@@ -149,9 +149,14 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   Widget _buildTile(Map<String, dynamic> n) {
     final isRead  = (n['isRead'] as int? ?? 0) == 1;
     final type    = n['type']  as String? ?? 'comment';
-    final isReply = type == 'reply';
-    final color   = isReply ? _kBlush : _kViolet;
-    final icon    = isReply ? Icons.reply_rounded : Icons.comment_rounded;
+    final isReply    = type == 'reply';
+    final isAccepted = type == 'accepted';
+    final color = isAccepted ? _kMint
+        : isReply   ? _kBlush
+        : _kViolet;
+    final icon  = isAccepted ? Icons.check_circle_rounded
+        : isReply   ? Icons.reply_rounded
+        : Icons.comment_rounded;
 
     return Dismissible(
       key: Key('notif_${n['id']}'),

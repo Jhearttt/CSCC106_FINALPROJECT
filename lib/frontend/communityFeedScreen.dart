@@ -261,23 +261,12 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
     ).show();
   }
 
-  // ── Toggle status + award points ──────────────────────────────────────────
+  // ── Toggle status (reopen only — resolving is done via Accept Solution) ──
   void _toggleStatus(int postId, String current) async {
-    final next = current == 'Open' ? 'Resolved' : 'Open';
-    await SyncService.instance.updatePostStatus(postId, next);
-    if (next == 'Resolved') {
-      final comments = await DatabaseHelper().getCommentsByPost(postId);
-      if (comments.isNotEmpty) {
-        final lastHelper = comments.last['userId'] as int?;
-        final posts      = await DatabaseHelper().getAllPosts();
-        final post       = posts.firstWhere((p) => p['id'] == postId,
-            orElse: () => {});
-        final category   = post['category'] as String? ?? 'Others';
-        if (lastHelper != null) {
-          await DatabaseHelper().addPoints(lastHelper, 10, category);
-        }
-      }
-    }
+    // Only allow toggling Resolved → Open (reopen).
+    // Resolving is exclusively done through Accept Solution in commentsModal.
+    if (current != 'Resolved') return;
+    await SyncService.instance.updatePostStatus(postId, 'Open');
     _queryLocal();
   }
 
@@ -401,35 +390,7 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
                 fontWeight: FontWeight.w900, color: _kInk, letterSpacing: -0.4)),
             const Spacer(),
             // ── Bell notification button ──
-            GestureDetector(
-              onTap: () => Navigator.push(context, MaterialPageRoute(
-                  builder: (_) => NotificationsScreen(
-                      localUserId: widget.localUserId)))
-                  .then((_) => _loadUnreadCount()),
-              child: Stack(clipBehavior: Clip.none, children: [
-                Container(
-                    width: 38, height: 38,
-                    decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.75),
-                      shape: BoxShape.circle,
-                      border: Border.all(color: _kBorderGlass, width: 1.2),
-                      boxShadow: [BoxShadow(color: _kViolet.withOpacity(0.10),
-                          blurRadius: 8, offset: const Offset(0, 3))],
-                    ),
-                    child: const Icon(Icons.notifications_outlined,
-                        color: _kViolet, size: 20)),
-                if (_unreadCount > 0)
-                  Positioned(top: -2, right: -2,
-                      child: Container(
-                          width: 17, height: 17,
-                          decoration: const BoxDecoration(
-                              color: _kBlush, shape: BoxShape.circle),
-                          child: Center(child: Text(
-                              _unreadCount > 9 ? '9+' : '$_unreadCount',
-                              style: const TextStyle(color: Colors.white,
-                                  fontSize: 9, fontWeight: FontWeight.w800))))),
-              ]),
-            ),
+
             const SizedBox(width: 8),
             // Connectivity badge
             AnimatedContainer(
@@ -446,10 +407,7 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
                         color: _isOnline ? _kMint : Colors.orange,
                         shape: BoxShape.circle)),
                 const SizedBox(width: 5),
-                Text(_isOnline ? 'Live' : 'Offline',
-                    style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700,
-                        color: _isOnline ? const Color(0xFF065F46)
-                            : Colors.orange.shade800)),
+
               ]),
             ),
           ]),
@@ -856,9 +814,11 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
                 final hasComments = count > 0;
                 return GestureDetector(
                   onTap: () => CommentsModal.show(context,
-                      postId:      post['id'],
-                      localUserId: widget.localUserId,
-                      postTitle:   post['title'] ?? ''),
+                      postId:       post['id'],
+                      localUserId:  widget.localUserId,
+                      postTitle:    post['title'] ?? '',
+                      postOwnerId:  post['userId'] as int?,
+                      postCategory: post['category'] as String? ?? 'Others'),
                   child: Container(
                     padding: const EdgeInsets.symmetric(
                         horizontal: 10, vertical: 5),
@@ -901,61 +861,8 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
                 );
               }),
               const Spacer(),
-              // Owner edit/delete buttons
-              if (isOwner) ...[
-                GestureDetector(
-                    onTap: () => _goToCreate(existingPost: post),
-                    child: _iconBtn(Icons.edit_rounded, _kSkySoft, _kSky)),
-                const SizedBox(width: 6),
-                GestureDetector(
-                    onTap: () => _deletePost(post['id']),
-                    child: _iconBtn(Icons.delete_rounded, _kBlushSoft, _kBlush)),
-              ],
-            ]),
 
-            // ── Image thumbnail (if any) ──
-            if ((post['imageUrl'] as String?) != null &&
-                (post['imageUrl'] as String).isNotEmpty) ...[
-              const SizedBox(height: 10),
-              GestureDetector(
-                onTap: () => _openFullScreenImage(
-                    context, post['imageUrl'] as String),
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(12),
-                  child: Stack(children: [
-                    Image.network(post['imageUrl'] as String,
-                        width: double.infinity, height: 160,
-                        fit: BoxFit.cover,
-                        loadingBuilder: (_, c, p) => p == null ? c
-                            : Container(height: 160,
-                            color: _kVioletSoft,
-                            child: const Center(child:
-                            CircularProgressIndicator(color: _kViolet))),
-                        errorBuilder: (_, __, ___) => Container(height: 56,
-                            color: _kVioletSoft,
-                            child: const Center(child: Icon(
-                                Icons.broken_image_outlined,
-                                color: _kVioletLight)))),
-                    Positioned(bottom: 8, right: 8,
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 7, vertical: 3),
-                          decoration: BoxDecoration(
-                              color: Colors.black.withOpacity(0.45),
-                              borderRadius: BorderRadius.circular(7)),
-                          child: const Row(mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(Icons.fullscreen_rounded,
-                                    color: Colors.white, size: 13),
-                                SizedBox(width: 2),
-                                Text("View", style: TextStyle(color: Colors.white,
-                                    fontSize: 9.5, fontWeight: FontWeight.w600)),
-                              ]),
-                        )),
-                  ]),
-                ),
-              ),
-            ],
+            ]),
           ]),
         ),
       ),
@@ -1210,9 +1117,11 @@ class PostDetailCard extends StatelessWidget {
                       onTap: () {
                         Navigator.pop(context);
                         CommentsModal.show(context,
-                            postId:      post['id'],
-                            localUserId: localUserId,
-                            postTitle:   post['title'] ?? '');
+                            postId:       post['id'],
+                            localUserId:  localUserId,
+                            postTitle:    post['title'] ?? '',
+                            postOwnerId:  post['userId'] as int?,
+                            postCategory: post['category'] as String? ?? 'Others');
                       },
                       child: Container(
                         padding: const EdgeInsets.symmetric(vertical: 13),
@@ -1240,42 +1149,61 @@ class PostDetailCard extends StatelessWidget {
                     ),
                   ),
 
-                  // ── Owner toggle status button ──
+                  // Owner actions
                   if (isOwner) ...[
                     const SizedBox(height: 10),
-                    SizedBox(
-                      width: double.infinity,
-                      child: GestureDetector(
-                        onTap: () =>
-                            onToggleStatus(post['id'], post['status']),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(vertical: 13),
-                          decoration: BoxDecoration(
-                            color: isOpen
-                                ? _kMint.withOpacity(0.10)
-                                : _kBlush.withOpacity(0.10),
-                            borderRadius: BorderRadius.circular(18),
-                            border: Border.all(
-                                color: isOpen
-                                    ? _kMint.withOpacity(0.40)
-                                    : _kBlush.withOpacity(0.40)),
+                    // If Open → show hint pointing to comments
+                    if (isOpen)
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.symmetric(
+                            vertical: 12, horizontal: 16),
+                        decoration: BoxDecoration(
+                          color: _kVioletSoft,
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(
+                              color: _kViolet.withOpacity(0.25)),
+                        ),
+                        child: const Row(children: [
+                          Icon(Icons.lightbulb_outline_rounded,
+                              color: _kViolet, size: 15),
+                          SizedBox(width: 8),
+                          Expanded(child: Text(
+                              "To resolve this post, tap \"View & Reply\" and accept the best answer.",
+                              style: TextStyle(fontSize: 12,
+                                  color: _kViolet,
+                                  fontWeight: FontWeight.w500))),
+                        ]),
+                      ),
+                    // If Resolved → allow reopening
+                    if (!isOpen)
+                      SizedBox(
+                        width: double.infinity,
+                        child: GestureDetector(
+                          onTap: () => onToggleStatus(post['id'], post['status']),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(vertical: 13),
+                            decoration: BoxDecoration(
+                              color: _kBlush.withOpacity(0.10),
+                              borderRadius: BorderRadius.circular(18),
+                              border: Border.all(
+                                  color: _kBlush.withOpacity(0.40)),
+                            ),
+                            child: const Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Icon(Icons.restart_alt_rounded,
+                                      color: _kBlush, size: 16),
+                                  SizedBox(width: 8),
+                                  Text("Reopen Post",
+                                      style: TextStyle(
+                                          color: _kBlush,
+                                          fontWeight: FontWeight.w700,
+                                          fontSize: 14)),
+                                ]),
                           ),
-                          child: Row(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Icon(isOpen
-                                    ? Icons.check_circle_outline_rounded
-                                    : Icons.restart_alt_rounded,
-                                    color: isOpen ? _kMint : _kBlush, size: 16),
-                                const SizedBox(width: 8),
-                                Text(isOpen ? "Mark as Resolved" : "Reopen Post",
-                                    style: TextStyle(
-                                        color: isOpen ? _kMint : _kBlush,
-                                        fontWeight: FontWeight.w700, fontSize: 14)),
-                              ]),
                         ),
                       ),
-                    ),
                   ],
                 ]),
           ),
@@ -1365,11 +1293,11 @@ class OwnerMenu extends StatelessWidget {
       color: Colors.white,
       offset: const Offset(0, 38),
       itemBuilder: (_) => [
-        _menuItem('edit',   Icons.edit_rounded,         'Edit Post',   _kSky),
-        _menuItem('toggle', Icons.sync_alt_rounded,
-            post['status'] == 'Open' ? 'Mark Resolved' : 'Reopen', _kMint),
-        _menuItem('delete', Icons.delete_outline_rounded,
-            'Delete Post', _kBlush),
+        _menuItem('edit',   Icons.edit_rounded, 'Edit Post', _kSky),
+        // Only show Reopen when already resolved — resolving is done via Accept Solution
+        if (post['status'] == 'Resolved')
+          _menuItem('toggle', Icons.restart_alt_rounded, 'Reopen Post', _kMint),
+        _menuItem('delete', Icons.delete_outline_rounded, 'Delete Post', _kBlush),
       ],
       onSelected: (val) {
         if (val == 'edit')   { onEdit(post); }

@@ -247,15 +247,15 @@ class _ProfileScreenState extends State<ProfileScreen>
             // Options
             _optionTile(ctx, Icons.edit_rounded, 'Edit Post', _kSky,
                     () { Navigator.pop(ctx); _goToEdit(post); }),
-            _optionTile(ctx, Icons.sync_alt_rounded,
-                post['status'] == 'Open' ? 'Mark as Resolved' : 'Reopen Post',
-                _kMint, () async {
-                  Navigator.pop(ctx);
-                  final next = post['status'] == 'Open' ? 'Resolved' : 'Open';
-                  await SyncService.instance.updatePostStatus(
-                      post['id'], next);
-                  _loadData();
-                }),
+            // Resolving is done via Accept Solution in comments — only allow Reopen
+            if (post['status'] == 'Resolved')
+              _optionTile(ctx, Icons.restart_alt_rounded, 'Reopen Post',
+                  _kMint, () async {
+                    Navigator.pop(ctx);
+                    await SyncService.instance.updatePostStatus(
+                        post['id'], 'Open');
+                    _loadData();
+                  }),
             _optionTile(ctx, Icons.delete_outline_rounded,
                 'Delete Post', _kBlush, () {
                   Navigator.pop(ctx);
@@ -462,35 +462,6 @@ class _ProfileScreenState extends State<ProfileScreen>
           children: [_buildPostsTab(), _buildSkillCardsTab()],
         )),
 
-        // ── Log out (only on own profile) ──
-        if (widget.isOwnProfile)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
-            child: SizedBox(width: double.infinity, height: 48,
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                    color: _kBlushSoft, borderRadius: BorderRadius.circular(28),
-                    border: Border.all(
-                        color: _kBlush.withOpacity(0.35), width: 1.5)),
-                child: OutlinedButton.icon(
-                  onPressed: () async {
-                    await AuthService().signOut();
-                    if (context.mounted) {
-                      Navigator.of(context).pushAndRemoveUntil(
-                          MaterialPageRoute(builder: (_) => const LoginScreen()),
-                              (r) => false);
-                    }
-                  },
-                  icon: const Icon(Icons.logout_rounded, color: _kBlush, size: 18),
-                  label: const Text("Log Out", style: TextStyle(
-                      color: _kBlush, fontWeight: FontWeight.w800, fontSize: 14)),
-                  style: OutlinedButton.styleFrom(side: BorderSide.none,
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(28))),
-                ),
-              ),
-            ),
-          ),
       ])),
     ]);
 

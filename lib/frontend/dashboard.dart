@@ -1,6 +1,7 @@
 import 'package:final_project/backend/databaseHelper.dart';
 import 'package:final_project/frontend/createPostScreen.dart';
 import 'package:final_project/frontend/communityFeedScreen.dart';
+import 'package:final_project/frontend/profileScreen.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -31,7 +32,6 @@ TextStyle get labelText  => GoogleFonts.inter(fontSize: 11,
 TextStyle get buttonText => GoogleFonts.inter(fontSize: 13,
     fontWeight: FontWeight.w700, letterSpacing: 0.3, color: Colors.white);
 
-// ── Badge helper ──────────────────────────────────────────────────────────────
 String _badgeForPoints(int pts) {
   if (pts >= 500) return '🏆 Legend';
   if (pts >= 200) return '💎 Expert';
@@ -46,6 +46,41 @@ Color _badgeColor(int pts) {
   if (pts >= 100) return const Color(0xFFA78BFA);
   if (pts >= 40)  return const Color(0xFF34D399);
   return const Color(0xFFA5B4FC);
+}
+
+// ── Reusable avatar widget: photo → initial fallback ─────────────────────────
+Widget _buildAvatar({
+  required String?  photoUrl,
+  required String   initial,
+  required double   size,
+  List<Color>       gradientColors = const [kViolet, kVioletLight],
+  Color?            borderColor,
+}) {
+  return Container(
+    width: size, height: size,
+    decoration: BoxDecoration(
+      shape: BoxShape.circle,
+      gradient: (photoUrl == null || photoUrl.isEmpty)
+          ? LinearGradient(colors: gradientColors,
+          begin: Alignment.topLeft, end: Alignment.bottomRight)
+          : null,
+      color: (photoUrl != null && photoUrl.isNotEmpty)
+          ? Colors.transparent : null,
+      border: borderColor != null
+          ? Border.all(color: borderColor, width: 2) : null,
+      boxShadow: [BoxShadow(color: kViolet.withOpacity(0.18),
+          blurRadius: 8, offset: const Offset(0, 3))],
+      image: (photoUrl != null && photoUrl.isNotEmpty)
+          ? DecorationImage(image: NetworkImage(photoUrl), fit: BoxFit.cover)
+          : null,
+    ),
+    child: (photoUrl == null || photoUrl.isEmpty)
+        ? Center(child: Text(initial, style: TextStyle(
+        color: Colors.white,
+        fontSize: size * 0.38,
+        fontWeight: FontWeight.w800)))
+        : null,
+  );
 }
 
 class Dashboard extends StatelessWidget {
@@ -66,11 +101,11 @@ class _DashboardHomeState extends State<DashboardHome> {
   Map<String, int> _stats = {
     "totalPosts": 0, "openRequests": 0, "skillOffers": 0, "resolvedPosts": 0,
   };
-  List<Map<String, dynamic>> _recentPosts   = [];
-  List<Map<String, dynamic>> _topHelpers    = [];
-  List<Map<String, dynamic>> _smartMatches  = [];
-  bool _loading = true;
-  String? _matchCategory; // category of latest help request
+  List<Map<String, dynamic>> _recentPosts  = [];
+  List<Map<String, dynamic>> _topHelpers   = [];
+  List<Map<String, dynamic>> _smartMatches = [];
+  bool    _loading = true;
+  String? _matchCategory;
 
   User? get _user => FirebaseAuth.instance.currentUser;
 
@@ -79,30 +114,27 @@ class _DashboardHomeState extends State<DashboardHome> {
 
   Future<void> _refreshDashboard() async {
     setState(() => _loading = true);
-    final db    = DatabaseHelper();
+    final db = DatabaseHelper();
 
-    // Boost check — auto-boost expired posts
     await db.checkAndBoostExpiredPosts();
+    await db.syncCommentCounts();
 
     final stats   = await db.getDashboardStats();
     final recent  = await db.getRecentPosts(limit: 5);
     final topHelp = await db.getTopHelpers();
 
-    // Smart match: find the most recent open Help Request and suggest helpers
     final openRequests = await db.getAllPosts(
         postType: 'Help Request', status: 'Open');
     List<Map<String, dynamic>> matches = [];
     String? matchCat;
     if (openRequests.isNotEmpty) {
       matchCat = openRequests.first['category'] as String?;
-      if (matchCat != null) {
-        matches = await db.getSuggestedHelpers(matchCat);
-      }
+      if (matchCat != null) matches = await db.getSuggestedHelpers(matchCat);
     }
 
     if (!mounted) return;
     setState(() {
-      _stats         = {
+      _stats = {
         "totalPosts":    stats["totalPosts"]    ?? 0,
         "openRequests":  stats["openRequests"]  ?? 0,
         "skillOffers":   stats["skillOffers"]   ?? 0,
@@ -121,6 +153,16 @@ class _DashboardHomeState extends State<DashboardHome> {
     if (h < 12) return "Good morning";
     if (h < 17) return "Good afternoon";
     return "Good evening";
+  }
+
+  void _goToProfile(BuildContext context, int userId) {
+    final isOwn = widget.localUserId == userId;
+    Navigator.push(context, MaterialPageRoute(
+      builder: (_) => ProfileScreen(
+        localUserId:  userId,
+        isOwnProfile: isOwn,
+      ),
+    ));
   }
 
   @override
@@ -147,8 +189,7 @@ class _DashboardHomeState extends State<DashboardHome> {
               _buildRecentPosts(),
               const SizedBox(height: 22),
               _buildLeaderboard(),
-              const SizedBox(height: 22),
-
+              const SizedBox(height: 8),
             ]),
           ),
         ),
@@ -190,10 +231,10 @@ class _DashboardHomeState extends State<DashboardHome> {
         physics: const NeverScrollableScrollPhysics(),
         crossAxisSpacing: 12, mainAxisSpacing: 12, childAspectRatio: 1.55,
         children: [
-          _statCard("Total Posts",    _stats["totalPosts"]!,    kViolet, Icons.article_rounded),
-          _statCard("Open Requests",  _stats["openRequests"]!,  kBlush,  Icons.help_outline_rounded),
-          _statCard("Skill Offers",   _stats["skillOffers"]!,   kMint,   Icons.lightbulb_outline_rounded),
-          _statCard("Resolved",       _stats["resolvedPosts"]!, kAmber,  Icons.check_circle_outline_rounded),
+          _statCard("Total Posts",   _stats["totalPosts"]!,    kViolet, Icons.article_rounded),
+          _statCard("Open Requests", _stats["openRequests"]!,  kBlush,  Icons.help_outline_rounded),
+          _statCard("Skill Offers",  _stats["skillOffers"]!,   kMint,   Icons.lightbulb_outline_rounded),
+          _statCard("Resolved",      _stats["resolvedPosts"]!, kAmber,  Icons.check_circle_outline_rounded),
         ],
       ),
     ]);
@@ -213,16 +254,17 @@ class _DashboardHomeState extends State<DashboardHome> {
                 borderRadius: BorderRadius.circular(12)),
             child: Icon(icon, color: color, size: 20)),
         const SizedBox(width: 10),
-        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start,
+        Expanded(child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisAlignment: MainAxisAlignment.center, children: [
-              Text("$count", style: statNumber),
-              Text(label, style: labelText),
-            ])),
+          Text("$count", style: statNumber),
+          Text(label,    style: labelText),
+        ])),
       ]),
     );
   }
 
-  // ── Smart Match suggestions ────────────────────────────────────────────────
+  // ── Smart Match ────────────────────────────────────────────────────────────
   Widget _buildSmartMatch() {
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Row(children: [
@@ -242,50 +284,58 @@ class _DashboardHomeState extends State<DashboardHome> {
       Text("Students who can help with $_matchCategory requests",
           style: labelText),
       const SizedBox(height: 10),
-      ..._smartMatches.map((user) => _matchCard(user)),
+      ..._smartMatches.map((u) => _matchCard(u)),
     ]);
   }
 
   Widget _matchCard(Map<String, dynamic> user) {
-    final pts     = (user['points'] as int? ?? 0);
-    final helped  = (user['helpCount'] as int? ?? 0);
-    final initial = (user['fullName'] as String? ?? '?')[0].toUpperCase();
-    return Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: kBorderGlass),
-        boxShadow: [BoxShadow(color: kViolet.withOpacity(0.06),
-            blurRadius: 10, offset: const Offset(0, 4))],
-      ),
-      child: Row(children: [
-        Container(width: 38, height: 38,
-            decoration: const BoxDecoration(shape: BoxShape.circle,
-                gradient: LinearGradient(colors: [kViolet, kVioletLight],
-                    begin: Alignment.topLeft, end: Alignment.bottomRight)),
-            child: Center(child: Text(initial, style: const TextStyle(
-                color: Colors.white, fontWeight: FontWeight.w800, fontSize: 15)))),
-        const SizedBox(width: 10),
-        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(user['fullName'] ?? '', style: GoogleFonts.poppins(
-                  fontWeight: FontWeight.w700, color: kInk, fontSize: 13)),
-              Text(user['skillTitle'] ?? '', style: labelText),
-            ])),
-        Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
-          Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-              decoration: BoxDecoration(
-                  color: _badgeColor(pts).withOpacity(0.15),
-                  borderRadius: BorderRadius.circular(8)),
-              child: Text(_badgeForPoints(pts), style: TextStyle(fontSize: 10,
-                  fontWeight: FontWeight.w700, color: _badgeColor(pts)))),
-          const SizedBox(height: 3),
-          Text("Helped $helped", style: labelText),
+    final pts     = (user['points']   as int?    ?? 0);
+    final helped  = (user['helpCount'] as int?   ?? 0);
+    final name    = user['fullName']  as String? ?? '?';
+    final initial = name.isNotEmpty ? name[0].toUpperCase() : '?';
+    final photo   = user['profilePic'] as String?;
+    final uid     = user['id'] as int?;
+
+    return GestureDetector(
+      onTap: uid != null ? () => _goToProfile(context, uid) : null,
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 8),
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: kBorderGlass),
+          boxShadow: [BoxShadow(color: kViolet.withOpacity(0.06),
+              blurRadius: 10, offset: const Offset(0, 4))],
+        ),
+        child: Row(children: [
+          _buildAvatar(photoUrl: photo, initial: initial, size: 38),
+          const SizedBox(width: 10),
+          Expanded(child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Row(children: [
+              Flexible(child: Text(name, style: GoogleFonts.poppins(
+                  fontWeight: FontWeight.w700, color: kInk, fontSize: 13))),
+              const SizedBox(width: 4),
+              const Icon(Icons.open_in_new_rounded,
+                  size: 11, color: kVioletLight),
+            ]),
+            Text(user['skillTitle'] ?? '', style: labelText),
+          ])),
+          Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+            Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                    color: _badgeColor(pts).withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(8)),
+                child: Text(_badgeForPoints(pts), style: TextStyle(
+                    fontSize: 10, fontWeight: FontWeight.w700,
+                    color: _badgeColor(pts)))),
+            const SizedBox(height: 3),
+            Text("Helped $helped", style: labelText),
+          ]),
         ]),
-      ]),
+      ),
     );
   }
 
@@ -298,7 +348,8 @@ class _DashboardHomeState extends State<DashboardHome> {
         const Spacer(),
         GestureDetector(
           onTap: () => Navigator.push(context, MaterialPageRoute(
-              builder: (_) => CommunityFeedScreen(localUserId: widget.localUserId))),
+              builder: (_) =>
+                  CommunityFeedScreen(localUserId: widget.localUserId))),
           child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
               decoration: BoxDecoration(gradient: kHeroGrad,
@@ -312,11 +363,11 @@ class _DashboardHomeState extends State<DashboardHome> {
   }
 
   Widget _recentPostTile(Map<String, dynamic> post) {
-    final isHelp   = post['postType'] == 'Help Request';
-    final isOpen   = post['status']   == 'Open';
+    final isHelp    = post['postType'] == 'Help Request';
+    final isOpen    = post['status']   == 'Open';
     final isBoosted = (post['isBoosted'] as int? ?? 0) == 1;
-    final urgency  = post['urgencyLevel'] as String? ?? 'Low';
-    final urgencyColor = urgency == 'High' ? kBlush
+    final urgency   = post['urgencyLevel'] as String? ?? 'Low';
+    final urgencyColor = urgency == 'High'   ? kBlush
         : urgency == 'Medium' ? kAmber : kMint;
 
     return Container(
@@ -335,29 +386,28 @@ class _DashboardHomeState extends State<DashboardHome> {
             decoration: BoxDecoration(
                 color: (isHelp ? kSky : kMint).withOpacity(0.15),
                 borderRadius: BorderRadius.circular(10)),
-            child: Icon(isHelp ? Icons.help_outline_rounded
+            child: Icon(isHelp
+                ? Icons.help_outline_rounded
                 : Icons.lightbulb_outline_rounded,
                 color: isHelp ? kSky : kMint, size: 18)),
         const SizedBox(width: 10),
-        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(children: [
-                if (isBoosted) ...[
-                  const Icon(Icons.rocket_launch_rounded,
-                      color: kAmber, size: 11),
-                  const SizedBox(width: 3),
-                ],
-                Expanded(child: Text(post['title'] ?? 'Untitled',
-                    maxLines: 1, overflow: TextOverflow.ellipsis,
-                    style: GoogleFonts.poppins(fontWeight: FontWeight.w600,
-                        color: kInk, fontSize: 12.5))),
-              ]),
-              Text(post['userFullName'] ?? '',
-                  style: labelText.copyWith(fontSize: 10.5)),
-            ])),
+        Expanded(child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            if (isBoosted) ...[
+              const Icon(Icons.rocket_launch_rounded, color: kAmber, size: 11),
+              const SizedBox(width: 3),
+            ],
+            Expanded(child: Text(post['title'] ?? 'Untitled',
+                maxLines: 1, overflow: TextOverflow.ellipsis,
+                style: GoogleFonts.poppins(fontWeight: FontWeight.w600,
+                    color: kInk, fontSize: 12.5))),
+          ]),
+          Text(post['userFullName'] ?? '',
+              style: labelText.copyWith(fontSize: 10.5)),
+        ])),
         const SizedBox(width: 8),
         Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
-          // Urgency badge
           Container(
               padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
               decoration: BoxDecoration(
@@ -369,11 +419,14 @@ class _DashboardHomeState extends State<DashboardHome> {
           Container(
               padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
               decoration: BoxDecoration(
-                  color: isOpen ? kBlush.withOpacity(0.10) : kMint.withOpacity(0.10),
+                  color: isOpen
+                      ? kBlush.withOpacity(0.10)
+                      : kMint.withOpacity(0.10),
                   borderRadius: BorderRadius.circular(7)),
               child: Text(post['status'] ?? '', style: TextStyle(
                   fontSize: 9.5, fontWeight: FontWeight.w700,
-                  color: isOpen ? const Color(0xFF9D174D)
+                  color: isOpen
+                      ? const Color(0xFF9D174D)
                       : const Color(0xFF065F46)))),
         ]),
       ]),
@@ -392,74 +445,96 @@ class _DashboardHomeState extends State<DashboardHome> {
       const SizedBox(height: 12),
       Container(
         decoration: BoxDecoration(
-            color: Colors.white, borderRadius: BorderRadius.circular(20),
-            border: Border.all(color: kBorderGlass),
-            boxShadow: [BoxShadow(color: kViolet.withOpacity(0.06),
-                blurRadius: 12, offset: const Offset(0, 4))]),
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: kBorderGlass),
+          boxShadow: [BoxShadow(color: kViolet.withOpacity(0.06),
+              blurRadius: 12, offset: const Offset(0, 4))],
+        ),
         child: Column(
           children: List.generate(_topHelpers.length, (i) {
-            final u       = _topHelpers[i];
-            final pts     = (u['points']    as int? ?? 0);
-            final helped  = (u['helpCount'] as int? ?? 0);
-            final streak  = (u['streak']    as int? ?? 0);
-            final initial = (u['fullName']  as String? ?? '?')[0].toUpperCase();
+            final u      = _topHelpers[i];
+            final pts    = (u['points']    as int?    ?? 0);
+            final helped = (u['helpCount'] as int?    ?? 0);
+            final streak = (u['streak']    as int?    ?? 0);
+            final name   = u['fullName']   as String? ?? '?';
+            final photo  = u['profilePic'] as String?;
+            final uid    = u['id']         as int?;
+            final initial = name.isNotEmpty ? name[0].toUpperCase() : '?';
             final isTop3  = i < 3;
             final rankColors = [
               const Color(0xFFFFD700),
               const Color(0xFFC0C0C0),
               const Color(0xFFCD7F32),
             ];
+
             return Column(children: [
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                child: Row(children: [
-                  // Rank
-                  SizedBox(width: 28,
-                      child: isTop3
-                          ? Text(['🥇','🥈','🥉'][i],
-                          style: const TextStyle(fontSize: 18))
-                          : Text('${i + 1}', style: TextStyle(
-                          fontSize: 13, fontWeight: FontWeight.w700,
-                          color: kInkLight))),
-                  const SizedBox(width: 8),
-                  // Avatar
-                  Container(width: 36, height: 36,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        gradient: LinearGradient(
-                          colors: isTop3
-                              ? [rankColors[i].withOpacity(0.8), rankColors[i]]
-                              : [kViolet, kVioletLight],
-                          begin: Alignment.topLeft, end: Alignment.bottomRight,
-                        ),
-                      ),
-                      child: Center(child: Text(initial, style: const TextStyle(
-                          color: Colors.white, fontWeight: FontWeight.w800,
-                          fontSize: 14)))),
-                  const SizedBox(width: 10),
-                  // Name + badge
-                  Expanded(child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    Text(u['fullName'] ?? '', style: GoogleFonts.poppins(
-                        fontWeight: FontWeight.w700, color: kInk, fontSize: 13)),
-                    Row(children: [
-                      Text(_badgeForPoints(pts), style: TextStyle(fontSize: 10,
-                          color: _badgeColor(pts))),
-                      if (streak > 0) ...[
-                        const SizedBox(width: 6),
-                        Text('🔥 $streak day streak',
-                            style: const TextStyle(fontSize: 10, color: kBlush)),
-                      ],
-                    ]),
-                  ])),
-                  // Points
-                  Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
-                    Text('$pts pts', style: GoogleFonts.poppins(
-                        fontWeight: FontWeight.w800, color: kInkMid,
-                        fontSize: 14)),
-                    Text('Helped $helped', style: labelText),
+              InkWell(
+                borderRadius: BorderRadius.circular(
+                    i == 0 ? 20 : (i == _topHelpers.length - 1 ? 20 : 0)),
+                onTap: uid != null
+                    ? () => _goToProfile(context, uid) : null,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 16, vertical: 12),
+                  child: Row(children: [
+                    // ── Rank medal / number ──
+                    SizedBox(width: 28,
+                        child: isTop3
+                            ? Text(['🥇', '🥈', '🥉'][i],
+                            style: const TextStyle(fontSize: 18))
+                            : Text('${i + 1}', style: TextStyle(
+                            fontSize: 13, fontWeight: FontWeight.w700,
+                            color: kInkLight))),
+                    const SizedBox(width: 8),
+
+                    // ── Avatar: profile photo or initial ──
+                    _buildAvatar(
+                      photoUrl: photo,
+                      initial:  initial,
+                      size:     38,
+                      gradientColors: isTop3
+                          ? [rankColors[i].withOpacity(0.8), rankColors[i]]
+                          : [kViolet, kVioletLight],
+                    ),
+                    const SizedBox(width: 10),
+
+                    // ── Name + badge + streak ──
+                    Expanded(child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          // Tappable name
+                          Row(children: [
+                            Flexible(child: Text(name,
+                                style: GoogleFonts.poppins(
+                                    fontWeight: FontWeight.w700,
+                                    color: kInk, fontSize: 13))),
+                            const SizedBox(width: 4),
+                            const Icon(Icons.open_in_new_rounded,
+                                size: 11, color: kVioletLight),
+                          ]),
+                          Row(children: [
+                            Text(_badgeForPoints(pts), style: TextStyle(
+                                fontSize: 10, color: _badgeColor(pts))),
+                            if (streak > 0) ...[
+                              const SizedBox(width: 6),
+                              Text('🔥 $streak day',
+                                  style: const TextStyle(
+                                      fontSize: 10, color: kBlush)),
+                            ],
+                          ]),
+                        ])),
+
+                    // ── Points + helped count ──
+                    Column(crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          Text('$pts pts', style: GoogleFonts.poppins(
+                              fontWeight: FontWeight.w800,
+                              color: kInkMid, fontSize: 14)),
+                          Text('Helped $helped', style: labelText),
+                        ]),
                   ]),
-                ]),
+                ),
               ),
               if (i < _topHelpers.length - 1)
                 Divider(height: 1, color: kBorderGlass.withOpacity(0.60)),
@@ -470,18 +545,23 @@ class _DashboardHomeState extends State<DashboardHome> {
     ]);
   }
 
-
-  Widget _actionBtn({required IconData icon, required String label,
-    required VoidCallback onTap}) =>
-      GestureDetector(onTap: onTap,
-          child: Container(
-            padding: const EdgeInsets.symmetric(vertical: 18),
-            decoration: BoxDecoration(gradient: kHeroGrad,
-                borderRadius: BorderRadius.circular(18)),
-            child: Column(children: [
-              Icon(icon, color: Colors.white, size: 24),
-              const SizedBox(height: 8),
-              Text(label, style: buttonText),
-            ]),
-          ));
+  Widget _actionBtn({
+    required IconData    icon,
+    required String      label,
+    required VoidCallback onTap,
+  }) =>
+      GestureDetector(
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 18),
+          decoration: BoxDecoration(
+              gradient: kHeroGrad,
+              borderRadius: BorderRadius.circular(18)),
+          child: Column(children: [
+            Icon(icon, color: Colors.white, size: 24),
+            const SizedBox(height: 8),
+            Text(label, style: buttonText),
+          ]),
+        ),
+      );
 }
