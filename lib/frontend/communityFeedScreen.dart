@@ -448,17 +448,7 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
                       localUserId: widget.localUserId)))
                   .then((_) => _loadUnreadCount()),
               child: Stack(clipBehavior: Clip.none, children: [
-                Container(
-                    width: 38, height: 38,
-                    decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.75),
-                      shape: BoxShape.circle,
-                      border: Border.all(color: _kBorderGlass, width: 1.2),
-                      boxShadow: [BoxShadow(color: _kViolet.withOpacity(0.10),
-                          blurRadius: 8, offset: const Offset(0, 3))],
-                    ),
-                    child: const Icon(Icons.notifications_outlined,
-                        color: _kViolet, size: 20)),
+
                 if (_unreadCount > 0)
                   Positioned(top: -2, right: -2,
                       child: Container(

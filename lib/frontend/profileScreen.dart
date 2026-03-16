@@ -93,15 +93,17 @@ IconData _catIcon(String cat) {
 class ProfileScreen extends StatefulWidget {
   final int?  localUserId;
   final bool  embeddedMode;
-  /// Pass false when viewing someone else's profile (e.g. from post detail).
-  /// Defaults to true so existing tab/home usage is unchanged.
   final bool  isOwnProfile;
+  /// Optional notifier to jump to a specific tab (0=Posts, 1=SkillCards)
+  /// from outside (e.g. drawer). Only used in embedded mode.
+  final ValueNotifier<int>? tabNotifier;
 
   const ProfileScreen({
     super.key,
     this.localUserId,
     this.embeddedMode = false,
     this.isOwnProfile = true,
+    this.tabNotifier,
   });
 
   @override
@@ -123,10 +125,23 @@ class _ProfileScreenState extends State<ProfileScreen>
     super.initState();
     _tabCtrl = TabController(length: 2, vsync: this);
     _loadData();
+    // Listen for external tab jumps (e.g. drawer → My Skill Cards)
+    widget.tabNotifier?.addListener(_onTabNotified);
+  }
+
+  void _onTabNotified() {
+    final idx = widget.tabNotifier?.value ?? 0;
+    if (_tabCtrl.index != idx) {
+      _tabCtrl.animateTo(idx);
+    }
   }
 
   @override
-  void dispose() { _tabCtrl.dispose(); super.dispose(); }
+  void dispose() {
+    widget.tabNotifier?.removeListener(_onTabNotified);
+    _tabCtrl.dispose();
+    super.dispose();
+  }
 
   Future<void> _loadData() async {
     if (widget.localUserId != null) {
@@ -465,34 +480,7 @@ class _ProfileScreenState extends State<ProfileScreen>
         )),
 
         // ── Log out (only on own profile) ──
-        if (widget.isOwnProfile)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
-            child: SizedBox(width: double.infinity, height: 48,
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                    color: _kBlushSoft, borderRadius: BorderRadius.circular(28),
-                    border: Border.all(
-                        color: _kBlush.withOpacity(0.35), width: 1.5)),
-                child: OutlinedButton.icon(
-                  onPressed: () async {
-                    await AuthService().signOut();
-                    if (context.mounted) {
-                      Navigator.of(context).pushAndRemoveUntil(
-                          MaterialPageRoute(builder: (_) => const LoginScreen()),
-                              (r) => false);
-                    }
-                  },
-                  icon: const Icon(Icons.logout_rounded, color: _kBlush, size: 18),
-                  label: const Text("Log Out", style: TextStyle(
-                      color: _kBlush, fontWeight: FontWeight.w800, fontSize: 14)),
-                  style: OutlinedButton.styleFrom(side: BorderSide.none,
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(28))),
-                ),
-              ),
-            ),
-          ),
+
       ])),
     ]);
 

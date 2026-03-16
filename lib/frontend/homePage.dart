@@ -42,7 +42,7 @@ const kVioletGrad = LinearGradient(
 // ─── Nav tab index constants (per SRS: Dashboard, Community, Create Post, Profile)
 const _tabDashboard  = 0;
 const _tabCommunity  = 1;
-const _tabNotif   = 2;
+const _tabCreate     = 2;
 const _tabProfile    = 3;
 
 class Homepage extends StatelessWidget {
@@ -74,6 +74,10 @@ class _HomePageHomeState extends State<HomePageHome>
   // Screens for tab indices 0, 1, 3 — Create Post (index 2) is launched modally
   late final List<Widget?> _screens;
 
+  /// Notifier used to programmatically jump to a tab inside ProfileScreen.
+  /// 0 = My Posts, 1 = Skill Cards
+  final _profileTabNotifier = ValueNotifier<int>(0);
+
   @override
   void initState() {
     super.initState();
@@ -83,15 +87,16 @@ class _HomePageHomeState extends State<HomePageHome>
       CommunityFeedScreen(localUserId: widget.localUserId),     // 1 Community
       null,                                                      // 2 Create Post — modal
       ProfileScreen(localUserId: widget.localUserId,            // 3 Profile
-          embeddedMode: true),
+          embeddedMode: true,
+          tabNotifier: _profileTabNotifier),
     ];
   }
 
   // ── Create Post tab launches as a full screen then returns to Community ──
   void _handleTabTap(int index) {
-    if (index == _tabNotif) {
+    if (index == _tabCreate) {
       Navigator.of(context).push(MaterialPageRoute(
-        builder: (_) => NotificationsScreen(localUserId: widget.localUserId),
+        builder: (_) => CreatePostScreen(localUserId: widget.localUserId),
       )).then((_) {
         // After returning from create, switch to Community Feed
         setState(() => _tab = _tabCommunity);
@@ -99,6 +104,12 @@ class _HomePageHomeState extends State<HomePageHome>
       return;
     }
     setState(() => _tab = index);
+  }
+
+  @override
+  void dispose() {
+    _profileTabNotifier.dispose();
+    super.dispose();
   }
 
   @override
@@ -145,7 +156,7 @@ class _HomePageHomeState extends State<HomePageHome>
               const SizedBox(width: 12),
               ShaderMask(
                 shaderCallback: (b) => kVioletGrad.createShader(b),
-                child: const Text("PeerAid", style: TextStyle(
+                child: const Text("CampusAid", style: TextStyle(
                     fontSize: 22, fontWeight: FontWeight.w900,
                     color: Colors.white, letterSpacing: -0.8)),
               ),
@@ -163,30 +174,31 @@ class _HomePageHomeState extends State<HomePageHome>
                     fontWeight: FontWeight.w700, letterSpacing: 0.2)),
               ),
               const SizedBox(width: 8),
-              GestureDetector(
-                onTap: () async {
-                  await AuthService().signOut();
-                  if (context.mounted) {
-                    Navigator.of(context).pushAndRemoveUntil(
-                      MaterialPageRoute(builder: (_) => const LoginScreen()),
-                          (r) => false,
-                    );
-                  }
-                },
-                child: Container(
-                  width: 38, height: 38,
-                  decoration: BoxDecoration(
-                    gradient: kVioletGrad,
-                    borderRadius: BorderRadius.circular(12),
-                    boxShadow: [BoxShadow(color: kViolet.withOpacity(0.35),
-                        blurRadius: 10, offset: const Offset(0, 4))],
-                  ),
-                  child: _user?.photoURL != null
-                      ? ClipRRect(borderRadius: BorderRadius.circular(11),
-                      child: Image.network(_user!.photoURL!, fit: BoxFit.cover))
-                      : const Icon(Icons.person_rounded, color: Colors.white, size: 18),
+
+              Container(
+                width: 38,
+                height: 38,
+                decoration: BoxDecoration(
+                  gradient: kVioletGrad,
+                  borderRadius: BorderRadius.circular(12),
+                  boxShadow: [
+                    BoxShadow(
+                      color: kViolet.withOpacity(0.35),
+                      blurRadius: 10,
+                      offset: const Offset(0, 4),
+                    )
+                  ],
                 ),
-              ),
+                child: _user?.photoURL != null
+                    ? ClipRRect(
+                  borderRadius: BorderRadius.circular(11),
+                  child: Image.network(
+                    _user!.photoURL!,
+                    fit: BoxFit.cover,
+                  ),
+                )
+                    : const Icon(Icons.person_rounded, color: Colors.white, size: 18),
+              )
             ]),
           ),
         ),
@@ -198,9 +210,9 @@ class _HomePageHomeState extends State<HomePageHome>
     switch (tab) {
       case _tabDashboard: return '✦  Dashboard';
       case _tabCommunity: return '✦  Community';
-      case _tabNotif:    return '✦  Notifications';
+      case _tabCreate:    return '✦  Create Post';
       case _tabProfile:   return '✦  Profile';
-      default:            return '✦  PeerAid';
+      default:            return '✦  CampusAid';
     }
   }
 
@@ -251,7 +263,6 @@ class _HomePageHomeState extends State<HomePageHome>
             children: [
               _navPill(_tabDashboard,  Icons.dashboard_rounded,    "Dashboard"),
               _navPill(_tabCommunity,  Icons.people_alt_rounded,   "Community"),
-              _navPill(_tabNotif,     Icons.notifications_none_outlined, "Notification"),
               _navPill(_tabProfile,    Icons.person_rounded,       "Profile"),
             ],
           ),
@@ -263,7 +274,7 @@ class _HomePageHomeState extends State<HomePageHome>
   Widget _navPill(int index, IconData icon, String label) {
     final active = _tab == index;
     // Create Post pill uses a distinct blush accent to stand out
-    final isCreate = index == _tabNotif;
+    final isCreate = index == _tabCreate;
     final activeGrad = isCreate
         ? const LinearGradient(colors: [Color(0xFFEC4899), kBlush],
         begin: Alignment.topLeft, end: Alignment.bottomRight)
@@ -392,6 +403,7 @@ class _HomePageHomeState extends State<HomePageHome>
                 Icons.auto_awesome_rounded, "My Skill Cards",
                 kMintSoft, kMint, () {
               Navigator.pop(context);
+              _profileTabNotifier.value = 1; // jump to Skill Cards tab
               setState(() => _tab = _tabProfile);
             }),
 
@@ -418,7 +430,7 @@ class _HomePageHomeState extends State<HomePageHome>
             ),
 
             _drawerTile(
-                Icons.info_outline_rounded, "About PeerAid",
+                Icons.info_outline_rounded, "About CampusAid",
                 kSkySoft, kSky, () {
               Navigator.pop(context);
               _showAboutDialog();
@@ -446,7 +458,7 @@ class _HomePageHomeState extends State<HomePageHome>
           child: Row(children: [
             ShaderMask(
               shaderCallback: (b) => kVioletGrad.createShader(b),
-              child: const Text("PeerAid", style: TextStyle(color: Colors.white,
+              child: const Text("CampusAid", style: TextStyle(color: Colors.white,
                   fontSize: 12, fontWeight: FontWeight.w800, letterSpacing: -0.3)),
             ),
             const Spacer(),
@@ -552,7 +564,7 @@ class _HomePageHomeState extends State<HomePageHome>
                       style: TextStyle(fontSize: 28))),
                 ),
                 const SizedBox(height: 12),
-                const Text("PeerAid", style: TextStyle(
+                const Text("CampusAid", style: TextStyle(
                     color: Colors.white, fontSize: 22,
                     fontWeight: FontWeight.w900, letterSpacing: -0.5)),
                 const SizedBox(height: 4),
@@ -565,7 +577,7 @@ class _HomePageHomeState extends State<HomePageHome>
               padding: const EdgeInsets.all(22),
               child: Column(children: [
                 const Text(
-                    "PeerAid is a campus peer-help platform that connects "
+                    "CampusAid is a campus peer-help platform that connects "
                         "students who need help with those who have the skills "
                         "to assist. Built to foster community, learning, and "
                         "campus collaboration.",
@@ -586,7 +598,7 @@ class _HomePageHomeState extends State<HomePageHome>
                 const SizedBox(height: 20),
                 Divider(color: kBorderGlass),
                 const SizedBox(height: 12),
-                Text("© 2025 PeerAid · All rights reserved",
+                Text("© 2025 CampusAid · All rights reserved",
                     style: TextStyle(fontSize: 11,
                         color: kInkMuted.withOpacity(0.70))),
                 const SizedBox(height: 4),
