@@ -99,75 +99,51 @@ class _AnimatedPostCardState extends State<_AnimatedPostCard>
   );
 }
 
-// ─── Community Feed Screen ────────────────────────────────────────────────────
-// ─── Smart image widget: renders base64 data URIs or network URLs ─────────────
+// ─── Image widget: handles base64 data URIs and network URLs ─────────────────
+// Same pattern as profileScreen._ProfilePostImage — safe, no null crashes.
 class _PostImage extends StatelessWidget {
-  final String   src;       // either "data:image/...;base64,..." or a URL
-  final double?  height;
-  final BoxFit   fit;
-  final Widget   Function(BuildContext, Object, StackTrace?)? errorBuilder;
+  final String  src;
+  final double? width;
+  final double? height;
+  final BoxFit  fit;
 
   const _PostImage({
     required this.src,
+    this.width,
     this.height,
     this.fit = BoxFit.cover,
-    this.errorBuilder,
   });
-
-  bool get _isBase64 => src.startsWith('data:image');
-
-  Uint8List? get _bytes {
-    try {
-      final comma = src.indexOf(',');
-      if (comma == -1) return null;
-      return base64Decode(src.substring(comma + 1));
-    } catch (_) { return null; }
-  }
 
   @override
   Widget build(BuildContext context) {
-    if (_isBase64) {
-      final bytes = _bytes;
-      if (bytes == null) {
-        return _broken(context);
+    if (src.isEmpty) return _broken();
+    if (src.startsWith('data:image')) {
+      try {
+        final comma = src.indexOf(',');
+        if (comma == -1) return _broken();
+        final bytes = base64Decode(src.substring(comma + 1));
+        return Image.memory(bytes,
+            width: width ?? double.infinity,
+            height: height, fit: fit,
+            errorBuilder: (_, __, ___) => _broken());
+      } catch (_) {
+        return _broken();
       }
-      return Image.memory(
-        bytes,
-        height:       height,
-        width:        double.infinity,
-        fit:          fit,
-        errorBuilder: (_, __, ___) => _broken(context),
-      );
     }
-    // Network URL fallback
-    return Image.network(
-      src,
-      height:       height,
-      width:        double.infinity,
-      fit:          fit,
-      loadingBuilder: (_, child, progress) => progress == null
-          ? child
-          : SizedBox(
-        height: height ?? 160,
-        child: Center(child: CircularProgressIndicator(
-            color: _kViolet,
-            value: progress.expectedTotalBytes != null
-                ? progress.cumulativeBytesLoaded /
-                progress.expectedTotalBytes!
-                : null)),
-      ),
-      errorBuilder: errorBuilder ?? (_, __, ___) => _broken(context),
-    );
+    return Image.network(src,
+        width: width ?? double.infinity,
+        height: height, fit: fit,
+        errorBuilder: (_, __, ___) => _broken());
   }
 
-  Widget _broken(BuildContext context) => Container(
-    height: height ?? 60,
-    color:  _kVioletSoft,
-    child:  const Center(child: Icon(
-        Icons.broken_image_outlined, color: _kVioletLight)),
-  );
+  Widget _broken() => Container(
+      width: width, height: height ?? 60,
+      color: _kVioletSoft,
+      child: const Center(child: Icon(
+          Icons.broken_image_outlined, color: _kVioletLight, size: 22)));
 }
 
+// ─── Community Feed Screen ────────────────────────────────────────────────────
 class CommunityFeedScreen extends StatefulWidget {
   final int? localUserId;
   const CommunityFeedScreen({super.key, this.localUserId});
@@ -234,7 +210,6 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
       await _loadUnreadCount();
     } catch (e, stack) {
       debugPrint('[CommunityFeed] _loadPosts error: $e\n$stack');
-      // Still try to show whatever is cached locally
       try { await _queryLocal(); } catch (_) {}
     } finally {
       if (mounted) setState(() => _loading = false);
@@ -254,22 +229,18 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
         postType: _typeFilter == 'All' ? null : _typeFilter,
         category: (_catFilter == null || _catFilter == 'All') ? null : _catFilter,
       );
-
-      int _urgencyRank(String u) => u == 'High' ? 0 : u == 'Medium' ? 1 : 2;
-
+      int urgencyRank(String u) => u == 'High' ? 0 : u == 'Medium' ? 1 : 2;
       final open = raw.where((p) => p['status'] != 'Resolved').toList()
         ..sort((a, b) {
-          final uA = _urgencyRank(a['urgencyLevel'] as String? ?? 'Low');
-          final uB = _urgencyRank(b['urgencyLevel'] as String? ?? 'Low');
+          final uA = urgencyRank(a['urgencyLevel'] as String? ?? 'Low');
+          final uB = urgencyRank(b['urgencyLevel'] as String? ?? 'Low');
           if (uA != uB) return uA.compareTo(uB);
           return (b['datePosted'] as String? ?? '')
               .compareTo(a['datePosted'] as String? ?? '');
         });
-
       final resolved = raw.where((p) => p['status'] == 'Resolved').toList()
         ..sort((a, b) => (b['datePosted'] as String? ?? '')
             .compareTo(a['datePosted'] as String? ?? ''));
-
       if (mounted) setState(() => _posts = [...open, ...resolved]);
     } catch (e) {
       debugPrint('[CommunityFeed] _queryLocal error: $e');
@@ -289,16 +260,8 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
           .where((c) => c.type == DocumentChangeType.added).length;
       if (added > 0 && !_loading) {
         await SyncService.instance.pullPostsFromFirestore();
-        await _queryLocal();
-
-        // reload local posts immediately
-        await _queryLocal();
-
         if (mounted) {
-          setState(() {
-            _pendingNewPosts += added;
-            _showNewBanner = true;
-          });
+          setState(() { _pendingNewPosts += added; _showNewBanner = true; });
           _bannerCtrl.forward();
         }
       }
@@ -323,11 +286,11 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
     if (mounted) setState(() => _loading = true);
     try {
       final raw = await DatabaseHelper().searchPosts(kw.trim());
-      int _urgencyRank(String u) => u == 'High' ? 0 : u == 'Medium' ? 1 : 2;
+      int urgencyRank(String u) => u == 'High' ? 0 : u == 'Medium' ? 1 : 2;
       final open = raw.where((p) => p['status'] != 'Resolved').toList()
         ..sort((a, b) {
-          final uA = _urgencyRank(a['urgencyLevel'] as String? ?? 'Low');
-          final uB = _urgencyRank(b['urgencyLevel'] as String? ?? 'Low');
+          final uA = urgencyRank(a['urgencyLevel'] as String? ?? 'Low');
+          final uB = urgencyRank(b['urgencyLevel'] as String? ?? 'Low');
           if (uA != uB) return uA.compareTo(uB);
           return (b['datePosted'] as String? ?? '')
               .compareTo(a['datePosted'] as String? ?? '');
@@ -354,10 +317,8 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
     ).show();
   }
 
-  // ── Toggle status (reopen only — resolving is done via Accept Solution) ──
+  // ── Toggle status ──────────────────────────────────────────────────────────
   void _toggleStatus(int postId, String current) async {
-    // Only allow toggling Resolved → Open (reopen).
-    // Resolving is exclusively done through Accept Solution in commentsModal.
     if (current != 'Resolved') return;
     await SyncService.instance.updatePostStatus(postId, 'Open');
     _queryLocal();
@@ -377,7 +338,7 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
     )).then((_) => _loadPosts());
   }
 
-  // ── Open post detail as a centered floating card ──────────────────────────
+  // ── Open post detail ──────────────────────────────────────────────────────
   void _openPostDetail(Map<String, dynamic> post) {
     showGeneralDialog(
       context: context,
@@ -411,9 +372,9 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
     );
   }
 
-  // ── Full screen image viewer (handles base64 + network URLs) ────────────
-  void _openFullScreenImage(BuildContext context, String src) {
-    Navigator.of(context).push(PageRouteBuilder(
+  // ── Full screen image viewer ──────────────────────────────────────────────
+  void _openFullScreenImage(BuildContext ctx, String src) {
+    Navigator.of(ctx).push(PageRouteBuilder(
       opaque: false,
       barrierColor: Colors.black87,
       pageBuilder: (_, anim, __) => FadeTransition(
@@ -421,14 +382,14 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
         child: Scaffold(
           backgroundColor: Colors.transparent,
           body: Stack(children: [
-            GestureDetector(onTap: () => Navigator.pop(context),
+            GestureDetector(onTap: () => Navigator.pop(ctx),
                 child: Container(color: Colors.black87)),
             Center(child: InteractiveViewer(
               minScale: 0.5, maxScale: 4.0,
               child: _PostImage(src: src, fit: BoxFit.contain),
             )),
             Positioned(top: 48, right: 16,
-                child: GestureDetector(onTap: () => Navigator.pop(context),
+                child: GestureDetector(onTap: () => Navigator.pop(ctx),
                     child: Container(width: 38, height: 38,
                         decoration: BoxDecoration(
                             color: Colors.white.withOpacity(0.15),
@@ -473,14 +434,14 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
 
       SafeArea(child: Column(children: [
 
-        // ── Header + connectivity badge ──
+        // ── Header ──
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
           child: Row(children: [
             const Text("Community Feed", style: TextStyle(fontSize: 20,
                 fontWeight: FontWeight.w900, color: _kInk, letterSpacing: -0.4)),
             const Spacer(),
-            // ── Bell notification button ──
+            // Bell
             GestureDetector(
               onTap: () => Navigator.push(context, MaterialPageRoute(
                   builder: (_) => NotificationsScreen(
@@ -683,7 +644,6 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
                   index: i, child: _buildPostCard(_posts[i])),
             ),
           ),
-
           // New posts banner
           if (_showNewBanner)
             Positioned(top: 8, left: 16, right: 16,
@@ -692,8 +652,7 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
                 child: GestureDetector(
                   onTap: _applyNewPosts,
                   child: Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 16, vertical: 11),
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
                     decoration: BoxDecoration(
                       gradient: const LinearGradient(
                           colors: [_kViolet, _kVioletLight],
@@ -704,16 +663,14 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
                           blurRadius: 16, offset: const Offset(0, 6))],
                     ),
                     child: Row(children: [
-                      const Icon(Icons.arrow_upward_rounded,
-                          color: Colors.white, size: 16),
+                      const Icon(Icons.arrow_upward_rounded, color: Colors.white, size: 16),
                       const SizedBox(width: 8),
                       Text('$_pendingNewPosts new post'
                           '${_pendingNewPosts != 1 ? 's' : ''} — tap to load',
                           style: const TextStyle(color: Colors.white,
                               fontSize: 13, fontWeight: FontWeight.w700)),
                       const Spacer(),
-                      const Icon(Icons.refresh_rounded,
-                          color: Colors.white70, size: 16),
+                      const Icon(Icons.refresh_rounded, color: Colors.white70, size: 16),
                     ]),
                   ),
                 ),
@@ -799,37 +756,26 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
         ]));
   }
 
-  // ── Post card (feed) ──────────────────────────────────────────────────────
+  // ── Post card ─────────────────────────────────────────────────────────────
   Widget _buildPostCard(Map<String, dynamic> post) {
-    try {
-      return _buildPostCardInner(post);
-    } catch (e) {
-      debugPrint('[CommunityFeed] card render error: $e  post=${post['id']}');
-      // Fallback minimal card so the list keeps rendering
-      return Container(
-        margin: const EdgeInsets.only(bottom: 12),
-        padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-          color: Colors.white.withOpacity(0.70),
-          borderRadius: BorderRadius.circular(22),
-          border: Border.all(color: _kBorderGlass),
-        ),
-        child: Text(post['title'] as String? ?? '(post)',
-            style: const TextStyle(color: _kInkMuted, fontSize: 13)),
-      );
-    }
-  }
-
-  Widget _buildPostCardInner(Map<String, dynamic> post) {
-    final isOpen    = post['status']   == 'Open';
-    final isHelpReq = post['postType'] == 'Help Request';
+    // All fields extracted safely up front — same pattern as profileScreen
+    final status    = post['status']      as String? ?? 'Open';
+    final postType  = post['postType']    as String? ?? 'Help Request';
+    final category  = post['category']   as String? ?? 'Others';
+    final title     = post['title']       as String? ?? '';
+    final desc      = post['description'] as String? ?? '';
+    final fullName  = post['userFullName'] as String? ?? 'Unknown';
+    final datePosted = post['datePosted'] as String? ?? '';
+    final urgency   = post['urgencyLevel'] as String? ?? 'Low';
+    final isBoosted = (post['isBoosted']   as int?    ?? 0) == 1;
+    final photoUrl  = post['userProfilePic'] as String?;
+    final imgUrl    = post['imageUrl']    as String?;
+    final isOpen    = status   == 'Open';
+    final isHelpReq = postType == 'Help Request';
     final isOwner   = widget.localUserId != null &&
         post['userId'] == widget.localUserId;
-    final _fullName = post['userFullName'] as String? ?? '';
-    final initials  = _fullName.isNotEmpty ? _fullName[0].toUpperCase() : '?';
-    final photoUrl  = post['userProfilePic'] as String?;
-    final urgency   = post['urgencyLevel'] as String? ?? 'Low';
-    final isBoosted = (post['isBoosted'] as int? ?? 0) == 1;
+    final initials  = fullName.isNotEmpty ? fullName[0].toUpperCase() : '?';
+    final hasImage  = imgUrl != null && imgUrl.isNotEmpty;
     final urgencyColor = urgency == 'High'   ? _kBlush
         : urgency == 'Medium' ? const Color(0xFFFCD34D) : _kMint;
 
@@ -842,7 +788,7 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
               ? const Color(0xFFFFFBEB).withOpacity(0.95)
               : isOpen
               ? Colors.white.withOpacity(0.82)
-              : Colors.white.withOpacity(0.55), // resolved = dimmed
+              : Colors.white.withOpacity(0.55),
           borderRadius: BorderRadius.circular(22),
           border: Border.all(
               color: isBoosted
@@ -856,40 +802,37 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
                 blurRadius: 18, offset: const Offset(0, 6)),
           ],
         ),
-        child: Padding(padding: const EdgeInsets.all(14),
+        child: Padding(
+          padding: const EdgeInsets.all(14),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
 
             // ── Avatar + author + badges ──
             Row(children: [
-              // Profile photo or initial avatar
               _buildAvatar(photoUrl, initials, 40),
               const SizedBox(width: 10),
               Expanded(child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start, children: [
                 Row(children: [
-                  if (isBoosted) const Text('🚀 ',
-                      style: TextStyle(fontSize: 10)),
-                  Flexible(child: Text(post['userFullName'] ?? 'Unknown',
+                  if (isBoosted) const Text('🚀 ', style: TextStyle(fontSize: 10)),
+                  Flexible(child: Text(fullName,
                       style: const TextStyle(fontWeight: FontWeight.w700,
                           fontSize: 13, color: _kInk))),
                 ]),
-                Text(_timeAgo(post['datePosted'] ?? ''),
+                Text(_timeAgo(datePosted),
                     style: const TextStyle(fontSize: 10.5, color: _kInkMuted)),
               ])),
-              // Urgency badge — always visible
+              // Urgency badge
               Container(
                   margin: const EdgeInsets.only(right: 6),
                   padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
                   decoration: BoxDecoration(
                       color: urgencyColor.withOpacity(0.12),
                       borderRadius: BorderRadius.circular(8),
-                      border: Border.all(
-                          color: urgencyColor.withOpacity(0.40), width: 1)),
+                      border: Border.all(color: urgencyColor.withOpacity(0.40), width: 1)),
                   child: Row(mainAxisSize: MainAxisSize.min, children: [
-                    Icon(
-                        urgency == 'High'   ? Icons.arrow_upward_rounded
-                            : urgency == 'Medium' ? Icons.remove_rounded
-                            : Icons.arrow_downward_rounded,
+                    Icon(urgency == 'High'   ? Icons.arrow_upward_rounded
+                        : urgency == 'Medium' ? Icons.remove_rounded
+                        : Icons.arrow_downward_rounded,
                         size: 9, color: urgencyColor),
                     const SizedBox(width: 3),
                     Text(urgency, style: TextStyle(fontSize: 9.5,
@@ -910,115 +853,91 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
                             ? _kBlush.withOpacity(0.40)
                             : _kMint.withOpacity(0.40), width: 1),
                   ),
-                  child: Text(post['status'] as String? ?? 'Open',
-                      style: TextStyle(fontSize: 10,
-                          fontWeight: FontWeight.w800,
-                          color: isOpen
-                              ? const Color(0xFF9D174D)
-                              : const Color(0xFF065F46)))),
+                  child: Text(status, style: TextStyle(fontSize: 10,
+                      fontWeight: FontWeight.w800,
+                      color: isOpen
+                          ? const Color(0xFF9D174D)
+                          : const Color(0xFF065F46)))),
             ]),
 
             const SizedBox(height: 9),
 
-            // ── Title + description + thumbnail row ──
-            Builder(builder: (_) {
-              final _imgUrl  = post['imageUrl'] as String?;
-              final hasImage = _imgUrl != null && _imgUrl.isNotEmpty;
-              return Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // Text section
-                  Expanded(child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(post['title'] ?? '', style: TextStyle(
-                            fontWeight: FontWeight.w800, fontSize: 14.5,
-                            color: isOpen ? _kInk : _kInkLight,
-                            letterSpacing: -0.2)),
-                        const SizedBox(height: 4),
-                        Text(
-                          (post['description'] ?? '').length > (hasImage ? 60 : 90)
-                              ? '${(post['description'] as String? ?? '')
-                              .substring(0, hasImage ? 60 : 90)}...'
-                              : post['description'] ?? '',
-                          style: TextStyle(fontSize: 12.5,
-                              color: isOpen ? _kInkLight : _kInkMuted,
-                              height: 1.4),
-                        ),
-                      ])),
+            // ── Title + description + thumbnail ──
+            Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Expanded(child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(title, style: TextStyle(
+                    fontWeight: FontWeight.w800, fontSize: 14.5,
+                    color: isOpen ? _kInk : _kInkLight,
+                    letterSpacing: -0.2)),
+                const SizedBox(height: 4),
+                Text(
+                  desc.length > (hasImage ? 60 : 90)
+                      ? '${desc.substring(0, hasImage ? 60 : 90)}...'
+                      : desc,
+                  style: TextStyle(fontSize: 12.5,
+                      color: isOpen ? _kInkLight : _kInkMuted, height: 1.4),
+                ),
+              ])),
 
-                  // ── Thumbnail (always visible if image exists) ──
-                  if (hasImage) ...[
-                    const SizedBox(width: 10),
-                    GestureDetector(
-                      onTap: () => _openFullScreenImage(
-                          context, post['imageUrl'] as String? ?? ''),
-                      child: Stack(children: [
-                        ClipRRect(
-                          borderRadius: BorderRadius.circular(12),
-                          child: _PostImage(
-                            src:    post['imageUrl'] as String? ?? '',
-                            height: 72,
-                            fit:    BoxFit.cover,
-                          ),
-                        ),
-                        // Expand icon overlay
-                        Positioned.fill(
-                          child: ClipRRect(
-                            borderRadius: BorderRadius.circular(12),
-                            child: Container(
-                              width: 72, height: 72,
-                              decoration: BoxDecoration(
-                                gradient: LinearGradient(
-                                  colors: [Colors.transparent,
-                                    Colors.black.withOpacity(0.35)],
-                                  begin: Alignment.topCenter,
-                                  end: Alignment.bottomCenter,
-                                ),
-                              ),
-                              alignment: Alignment.bottomCenter,
-                              padding: const EdgeInsets.only(bottom: 5),
-                              child: const Icon(Icons.fullscreen_rounded,
-                                  color: Colors.white, size: 14),
-                            ),
-                          ),
-                        ),
-                        // Outer border
-                        Positioned.fill(child: ClipRRect(
-                          borderRadius: BorderRadius.circular(12),
-                          child: Container(
-                            width: 72, height: 72,
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(12),
-                              border: Border.all(
-                                  color: _kBorderGlass, width: 1.2),
-                            ),
-                          ),
-                        )),
-                      ]),
+              // Side thumbnail — only if image exists
+              if (hasImage) ...[
+                const SizedBox(width: 10),
+                GestureDetector(
+                  onTap: () => _openFullScreenImage(context, imgUrl),
+                  child: Stack(children: [
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(12),
+                      child: _PostImage(src: imgUrl, width: 72, height: 72),
                     ),
-                  ],
-                ],
-              );
-            }),
+                    // Gradient + expand icon overlay
+                    Positioned.fill(
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(12),
+                        child: Container(
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(
+                                colors: [Colors.transparent,
+                                  Colors.black.withOpacity(0.35)],
+                                begin: Alignment.topCenter,
+                                end: Alignment.bottomCenter),
+                          ),
+                          alignment: Alignment.bottomCenter,
+                          padding: const EdgeInsets.only(bottom: 5),
+                          child: const Icon(Icons.fullscreen_rounded,
+                              color: Colors.white, size: 14),
+                        ),
+                      ),
+                    ),
+                    // Border
+                    Positioned.fill(child: ClipRRect(
+                      borderRadius: BorderRadius.circular(12),
+                      child: Container(
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: _kBorderGlass, width: 1.2),
+                        ),
+                      ),
+                    )),
+                  ]),
+                ),
+              ],
+            ]),
 
             const SizedBox(height: 10),
 
-            // ── Category + type chips ──
+            // ── Chips + comment count + owner actions ──
             Row(children: [
-              _chip(
-                isHelpReq ? Icons.help_outline_rounded
-                    : Icons.lightbulb_outline_rounded,
-                post['postType'] as String? ?? 'Post',
-                isHelpReq ? _kSkySoft : _kMintSoft,
-                isHelpReq ? _kSky     : _kMint,
-              ),
+              _chip(isHelpReq ? Icons.help_outline_rounded
+                  : Icons.lightbulb_outline_rounded,
+                  postType,
+                  isHelpReq ? _kSkySoft : _kMintSoft,
+                  isHelpReq ? _kSky     : _kMint),
               const SizedBox(width: 6),
-              _chip(Icons.label_outline_rounded,
-                  post['category'] as String? ?? 'Others',
+              _chip(Icons.label_outline_rounded, category,
                   _kVioletSoft, _kVioletLight),
               const SizedBox(width: 6),
-              // ── Comment count — always visible, tap to open ──
+              // Comment count pill
               Builder(builder: (_) {
                 final count = post['commentCount'] as int? ?? 0;
                 final hasComments = count > 0;
@@ -1026,44 +945,36 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
                   onTap: () => CommentsModal.show(context,
                       postId:       post['id'],
                       localUserId:  widget.localUserId,
-                      postTitle:    post['title'] ?? '',
+                      postTitle:    title,
                       postOwnerId:  post['userId'] as int?,
-                      postCategory: post['category'] as String? ?? 'Others'),
+                      postCategory: category),
                   child: Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 10, vertical: 5),
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                     decoration: BoxDecoration(
-                      gradient: hasComments
-                          ? const LinearGradient(
+                      gradient: hasComments ? const LinearGradient(
                           colors: [Color(0xFF7B6CF6), Color(0xFFA78BFA)],
                           begin: Alignment.topLeft,
-                          end: Alignment.bottomRight)
-                          : null,
+                          end: Alignment.bottomRight) : null,
                       color: hasComments ? null : Colors.white,
                       borderRadius: BorderRadius.circular(20),
                       border: Border.all(
                           color: hasComments
-                              ? _kViolet.withOpacity(0.0)
-                              : _kBorderGlass,
+                              ? _kViolet.withOpacity(0.0) : _kBorderGlass,
                           width: 1.2),
                       boxShadow: hasComments ? [BoxShadow(
                           color: _kViolet.withOpacity(0.22),
                           blurRadius: 8, offset: const Offset(0, 3))] : [],
                     ),
                     child: Row(mainAxisSize: MainAxisSize.min, children: [
-                      Icon(
-                          hasComments
-                              ? Icons.chat_bubble_rounded
-                              : Icons.chat_bubble_outline_rounded,
-                          color: hasComments ? Colors.white : _kInkMuted,
-                          size: 12),
+                      Icon(hasComments
+                          ? Icons.chat_bubble_rounded
+                          : Icons.chat_bubble_outline_rounded,
+                          color: hasComments ? Colors.white : _kInkMuted, size: 12),
                       const SizedBox(width: 5),
-                      Text(
-                          hasComments
-                              ? '$count ${count == 1 ? 'comment' : 'comments'}'
-                              : 'Comment',
-                          style: TextStyle(
-                              fontSize: 10.5,
+                      Text(hasComments
+                          ? '$count ${count == 1 ? 'comment' : 'comments'}'
+                          : 'Comment',
+                          style: TextStyle(fontSize: 10.5,
                               fontWeight: FontWeight.w700,
                               color: hasComments ? Colors.white : _kInkMuted)),
                     ]),
@@ -1071,16 +982,6 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
                 );
               }),
               const Spacer(),
-              // Owner edit/delete buttons
-              if (isOwner) ...[
-                GestureDetector(
-                    onTap: () => _goToCreate(existingPost: post),
-                    child: _iconBtn(Icons.edit_rounded, _kSkySoft, _kSky)),
-                const SizedBox(width: 6),
-                GestureDetector(
-                    onTap: () => _deletePost(post['id']),
-                    child: _iconBtn(Icons.delete_rounded, _kBlushSoft, _kBlush)),
-              ],
             ]),
           ]),
         ),
@@ -1088,29 +989,24 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
     );
   }
 
-  // ── Avatar widget: profile photo > initial fallback ───────────────────────
-  Widget _buildAvatar(String? photoUrl, String initial, double size) {
-    return Container(
-      width: size, height: size,
-      decoration: BoxDecoration(
-        shape: BoxShape.circle,
-        gradient: const LinearGradient(
-            colors: [_kViolet, _kVioletLight],
-            begin: Alignment.topLeft, end: Alignment.bottomRight),
-        boxShadow: [BoxShadow(color: _kViolet.withOpacity(0.28), blurRadius: 6)],
-        image: photoUrl != null && photoUrl.isNotEmpty
-            ? DecorationImage(
-            image: NetworkImage(photoUrl), fit: BoxFit.cover)
-            : null,
-      ),
-      child: photoUrl == null || photoUrl.isEmpty
-          ? Center(child: Text(initial, style: TextStyle(
-          color: Colors.white,
-          fontSize: size * 0.38,
-          fontWeight: FontWeight.w800)))
-          : null,
-    );
-  }
+  Widget _buildAvatar(String? photoUrl, String initial, double size) =>
+      Container(
+        width: size, height: size,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          gradient: const LinearGradient(
+              colors: [_kViolet, _kVioletLight],
+              begin: Alignment.topLeft, end: Alignment.bottomRight),
+          boxShadow: [BoxShadow(color: _kViolet.withOpacity(0.28), blurRadius: 6)],
+          image: photoUrl != null && photoUrl.isNotEmpty
+              ? DecorationImage(image: NetworkImage(photoUrl), fit: BoxFit.cover)
+              : null,
+        ),
+        child: photoUrl == null || photoUrl.isEmpty
+            ? Center(child: Text(initial, style: TextStyle(
+            color: Colors.white, fontSize: size * 0.38,
+            fontWeight: FontWeight.w800))) : null,
+      );
 
   Widget _chip(IconData icon, String label, Color bg, Color fg) => Container(
     padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
@@ -1150,17 +1046,23 @@ class PostDetailCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isOpen    = post['status'] == 'Open';
-    final isHelpReq = post['postType'] == 'Help Request';
-    final isOwner   = localUserId != null && post['userId'] == localUserId;
+    // Extract all fields safely first — no inline casts
+    final status    = post['status']      as String? ?? 'Open';
+    final postType  = post['postType']    as String? ?? 'Help Request';
+    final category  = post['category']   as String? ?? 'Others';
+    final title     = post['title']       as String? ?? '';
+    final desc      = post['description'] as String? ?? '';
+    final fullName  = post['userFullName'] as String? ?? 'Unknown';
+    final imgUrl    = post['imageUrl']    as String?;
     final urgency   = post['urgencyLevel'] as String? ?? 'Low';
     final photoUrl  = post['userProfilePic'] as String?;
-    final _fullName = post['userFullName'] as String? ?? '';
-    final initials  = _fullName.isNotEmpty ? _fullName[0].toUpperCase() : '?';
+    final isOpen    = status   == 'Open';
+    final isHelpReq = postType == 'Help Request';
+    final isOwner   = localUserId != null && post['userId'] == localUserId;
+    final initials  = fullName.isNotEmpty ? fullName[0].toUpperCase() : '?';
+    final hasImage  = imgUrl != null && imgUrl.isNotEmpty;
     final urgencyColor = urgency == 'High'   ? _kBlush
         : urgency == 'Medium' ? const Color(0xFFFCD34D) : _kMint;
-
-    // Resolver info (only when Resolved)
     final resolverName = post['resolvedByName'] as String?;
     final resolverId   = post['resolvedById']   as int?;
 
@@ -1187,25 +1089,25 @@ class PostDetailCard extends StatelessWidget {
             child: Column(crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
 
-                  // ── Header: avatar + name + close ──
+                  // ── Header ──
                   Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
                     _buildAvatar(photoUrl, initials, 46),
                     const SizedBox(width: 12),
                     Expanded(child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start, children: [
-                      // Tappable author name → ProfileScreen
                       GestureDetector(
                         onTap: () {
                           final authorId = post['userId'] as int?;
                           if (authorId != null) {
                             Navigator.pop(context);
                             Navigator.of(context).push(MaterialPageRoute(
-                              builder: (_) => ProfileScreen(localUserId: authorId, isOwnProfile: false),
+                              builder: (_) => ProfileScreen(
+                                  localUserId: authorId, isOwnProfile: false),
                             ));
                           }
                         },
                         child: Row(children: [
-                          Text(post['userFullName'] ?? 'Unknown',
+                          Text(fullName,
                               style: const TextStyle(fontWeight: FontWeight.w800,
                                   fontSize: 14.5, color: _kViolet)),
                           const SizedBox(width: 4),
@@ -1214,13 +1116,11 @@ class PostDetailCard extends StatelessWidget {
                         ]),
                       ),
                       const SizedBox(height: 3),
-                      _timeAgoText(post['datePosted'] ?? ''),
+                      _timeAgoText(post['datePosted'] as String? ?? ''),
                     ])),
-                    // Owner three-dot menu
                     if (isOwner)
                       OwnerMenu(post: post, onEdit: onEdit, onDelete: onDelete,
                           onToggle: onToggleStatus),
-                    // Non-owner: just close
                     if (!isOwner)
                       GestureDetector(
                         onTap: () => Navigator.pop(context),
@@ -1235,18 +1135,15 @@ class PostDetailCard extends StatelessWidget {
 
                   const SizedBox(height: 16),
 
-                  // ── Badges row ──
+                  // ── Badges ──
                   Wrap(spacing: 6, runSpacing: 6, children: [
-                    _badge(
-                        isHelpReq ? Icons.help_outline_rounded
-                            : Icons.lightbulb_outline_rounded,
-                        post['postType'],
-                        isHelpReq ? _kSky : _kMint),
-                    _badge(Icons.label_outline_rounded,
-                        post['category'], _kVioletLight),
+                    _badge(isHelpReq ? Icons.help_outline_rounded
+                        : Icons.lightbulb_outline_rounded,
+                        postType, isHelpReq ? _kSky : _kMint),
+                    _badge(Icons.label_outline_rounded, category, _kVioletLight),
                     _badge(null, urgency, urgencyColor,
                         bg: urgencyColor.withOpacity(0.12)),
-                    _badge(null, post['status'],
+                    _badge(null, status,
                         isOpen ? const Color(0xFF9D174D) : const Color(0xFF065F46),
                         bg: isOpen
                             ? const Color(0xFFFCE7F3) : const Color(0xFFD1FAE5)),
@@ -1254,19 +1151,16 @@ class PostDetailCard extends StatelessWidget {
 
                   const SizedBox(height: 14),
 
-                  // ── Title ──
-                  Text(post['title'] ?? '', style: const TextStyle(
+                  Text(title, style: const TextStyle(
                       fontWeight: FontWeight.w900, fontSize: 17,
                       color: _kInk, letterSpacing: -0.3)),
                   const SizedBox(height: 8),
 
-                  // ── Description ──
-                  Text(post['description'] ?? '', style: const TextStyle(
+                  Text(desc, style: const TextStyle(
                       fontSize: 13.5, color: _kInkLight, height: 1.55)),
 
-                  // ── Image — tap to expand full screen ──
-                  if ((post['imageUrl'] as String?) != null &&
-                      (post['imageUrl'] as String? ?? '').isNotEmpty) ...[
+                  // ── Image: tap to expand ──
+                  if (hasImage) ...[
                     const SizedBox(height: 14),
                     GestureDetector(
                       onTap: () {
@@ -1284,9 +1178,7 @@ class PostDetailCard extends StatelessWidget {
                                 Center(child: InteractiveViewer(
                                   minScale: 0.5, maxScale: 4.0,
                                   child: _PostImage(
-                                    src: post['imageUrl'] as String? ?? '',
-                                    fit: BoxFit.contain,
-                                  ),
+                                      src: imgUrl!, fit: BoxFit.contain),
                                 )),
                                 Positioned(top: 48, right: 16,
                                     child: GestureDetector(
@@ -1310,24 +1202,18 @@ class PostDetailCard extends StatelessWidget {
                       child: Stack(children: [
                         ClipRRect(
                           borderRadius: BorderRadius.circular(14),
-                          child: _PostImage(
-                            src: post['imageUrl'] as String? ?? '',
-                            fit: BoxFit.cover,
-                            errorBuilder: (_, __, ___) => const SizedBox.shrink(),
-                          ),
+                          child: _PostImage(src: imgUrl!, fit: BoxFit.cover),
                         ),
-                        // Expand hint overlay
                         Positioned.fill(
                           child: ClipRRect(
                             borderRadius: BorderRadius.circular(14),
                             child: Container(
                               decoration: BoxDecoration(
                                 gradient: LinearGradient(
-                                  colors: [Colors.transparent,
-                                    Colors.black.withOpacity(0.28)],
-                                  begin: Alignment.topCenter,
-                                  end: Alignment.bottomCenter,
-                                ),
+                                    colors: [Colors.transparent,
+                                      Colors.black.withOpacity(0.28)],
+                                    begin: Alignment.topCenter,
+                                    end: Alignment.bottomCenter),
                               ),
                               alignment: Alignment.bottomRight,
                               padding: const EdgeInsets.all(10),
@@ -1354,7 +1240,7 @@ class PostDetailCard extends StatelessWidget {
                     ),
                   ],
 
-                  // ── Resolved by (tappable) ──
+                  // ── Resolved by ──
                   if (!isOpen) ...[
                     const SizedBox(height: 14),
                     Container(
@@ -1362,27 +1248,23 @@ class PostDetailCard extends StatelessWidget {
                       decoration: BoxDecoration(
                         color: _kMint.withOpacity(0.08),
                         borderRadius: BorderRadius.circular(14),
-                        border: Border.all(
-                            color: _kMint.withOpacity(0.30), width: 1),
+                        border: Border.all(color: _kMint.withOpacity(0.30), width: 1),
                       ),
                       child: Row(children: [
                         const Icon(Icons.check_circle_rounded,
                             color: _kMint, size: 16),
                         const SizedBox(width: 8),
-                        const Text("Resolved",
-                            style: TextStyle(color: _kMint,
-                                fontWeight: FontWeight.w700, fontSize: 12.5)),
+                        const Text("Resolved", style: TextStyle(color: _kMint,
+                            fontWeight: FontWeight.w700, fontSize: 12.5)),
                         if (resolverName != null) ...[
                           const Text(" by ", style: TextStyle(
                               color: _kInkMuted, fontSize: 12.5)),
-                          // Tappable resolver → their profile
                           GestureDetector(
                             onTap: resolverId != null ? () {
                               Navigator.pop(context);
                               Navigator.of(context).push(MaterialPageRoute(
-                                builder: (_) =>
-                                    ProfileScreen(localUserId: resolverId,
-                                        isOwnProfile: false),
+                                builder: (_) => ProfileScreen(
+                                    localUserId: resolverId, isOwnProfile: false),
                               ));
                             } : null,
                             child: Row(mainAxisSize: MainAxisSize.min, children: [
@@ -1412,9 +1294,9 @@ class PostDetailCard extends StatelessWidget {
                         CommentsModal.show(context,
                             postId:       post['id'],
                             localUserId:  localUserId,
-                            postTitle:    post['title'] ?? '',
+                            postTitle:    title,
                             postOwnerId:  post['userId'] as int?,
-                            postCategory: post['category'] as String? ?? 'Others');
+                            postCategory: category);
                       },
                       child: Container(
                         padding: const EdgeInsets.symmetric(vertical: 13),
@@ -1434,18 +1316,17 @@ class PostDetailCard extends StatelessWidget {
                               Icon(Icons.chat_bubble_outline_rounded,
                                   color: Colors.white, size: 16),
                               SizedBox(width: 8),
-                              Text("View & Reply",
-                                  style: TextStyle(color: Colors.white,
-                                      fontWeight: FontWeight.w700, fontSize: 14)),
+                              Text("View & Reply", style: TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w700, fontSize: 14)),
                             ]),
                       ),
                     ),
                   ),
 
-                  // Owner actions
+                  // ── Owner actions ──
                   if (isOwner) ...[
                     const SizedBox(height: 10),
-                    // If Open → show hint pointing to comments
                     if (isOpen)
                       Container(
                         width: double.infinity,
@@ -1454,8 +1335,7 @@ class PostDetailCard extends StatelessWidget {
                         decoration: BoxDecoration(
                           color: _kVioletSoft,
                           borderRadius: BorderRadius.circular(16),
-                          border: Border.all(
-                              color: _kViolet.withOpacity(0.25)),
+                          border: Border.all(color: _kViolet.withOpacity(0.25)),
                         ),
                         child: const Row(children: [
                           Icon(Icons.lightbulb_outline_rounded,
@@ -1464,23 +1344,20 @@ class PostDetailCard extends StatelessWidget {
                           Expanded(child: Text(
                               "To resolve this post, tap \"View & Reply\" and accept the best answer.",
                               style: TextStyle(fontSize: 12,
-                                  color: _kViolet,
-                                  fontWeight: FontWeight.w500))),
+                                  color: _kViolet, fontWeight: FontWeight.w500))),
                         ]),
                       ),
-                    // If Resolved → allow reopening
                     if (!isOpen)
                       SizedBox(
                         width: double.infinity,
                         child: GestureDetector(
-                          onTap: () => onToggleStatus(post['id'], post['status']),
+                          onTap: () => onToggleStatus(post['id'], status),
                           child: Container(
                             padding: const EdgeInsets.symmetric(vertical: 13),
                             decoration: BoxDecoration(
                               color: _kBlush.withOpacity(0.10),
                               borderRadius: BorderRadius.circular(18),
-                              border: Border.all(
-                                  color: _kBlush.withOpacity(0.40)),
+                              border: Border.all(color: _kBlush.withOpacity(0.40)),
                             ),
                             child: const Row(
                                 mainAxisAlignment: MainAxisAlignment.center,
@@ -1488,11 +1365,9 @@ class PostDetailCard extends StatelessWidget {
                                   Icon(Icons.restart_alt_rounded,
                                       color: _kBlush, size: 16),
                                   SizedBox(width: 8),
-                                  Text("Reopen Post",
-                                      style: TextStyle(
-                                          color: _kBlush,
-                                          fontWeight: FontWeight.w700,
-                                          fontSize: 14)),
+                                  Text("Reopen Post", style: TextStyle(
+                                      color: _kBlush,
+                                      fontWeight: FontWeight.w700, fontSize: 14)),
                                 ]),
                           ),
                         ),
@@ -1514,8 +1389,7 @@ class PostDetailCard extends StatelessWidget {
               colors: [_kViolet, _kVioletLight],
               begin: Alignment.topLeft, end: Alignment.bottomRight),
           image: photoUrl != null && photoUrl.isNotEmpty
-              ? DecorationImage(
-              image: NetworkImage(photoUrl), fit: BoxFit.cover)
+              ? DecorationImage(image: NetworkImage(photoUrl), fit: BoxFit.cover)
               : null,
         ),
         child: photoUrl == null || photoUrl.isEmpty
@@ -1524,23 +1398,21 @@ class PostDetailCard extends StatelessWidget {
             fontWeight: FontWeight.w800))) : null,
       );
 
-  Widget _badge(IconData? icon, String label, Color fg,
-      {Color? bg}) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
-      decoration: BoxDecoration(
-          color: bg ?? fg.withOpacity(0.10),
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: fg.withOpacity(0.30), width: 1)),
-      child: Row(mainAxisSize: MainAxisSize.min, children: [
-        if (icon != null) ...[
-          Icon(icon, size: 11, color: fg), const SizedBox(width: 4),
-        ],
-        Text(label, style: TextStyle(fontSize: 10.5,
-            fontWeight: FontWeight.w700, color: fg)),
-      ]),
-    );
-  }
+  Widget _badge(IconData? icon, String label, Color fg, {Color? bg}) =>
+      Container(
+        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+        decoration: BoxDecoration(
+            color: bg ?? fg.withOpacity(0.10),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: fg.withOpacity(0.30), width: 1)),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          if (icon != null) ...[
+            Icon(icon, size: 11, color: fg), const SizedBox(width: 4),
+          ],
+          Text(label, style: TextStyle(fontSize: 10.5,
+              fontWeight: FontWeight.w700, color: fg)),
+        ]),
+      );
 
   Widget _timeAgoText(String dateStr) {
     try {
@@ -1552,13 +1424,12 @@ class PostDetailCard extends StatelessWidget {
       else if (diff.inDays < 1)    text = '${diff.inHours}h ago';
       else if (diff.inDays < 7)    text = '${diff.inDays}d ago';
       else text = '${dt.day}/${dt.month}/${dt.year}';
-      return Text(text, style: const TextStyle(
-          fontSize: 11, color: _kInkMuted));
+      return Text(text, style: const TextStyle(fontSize: 11, color: _kInkMuted));
     } catch (_) { return const SizedBox.shrink(); }
   }
 }
 
-// ── Owner three-dot menu in post detail ───────────────────────────────────────
+// ── Owner three-dot menu ──────────────────────────────────────────────────────
 class OwnerMenu extends StatelessWidget {
   final Map<String, dynamic> post;
   final void Function(Map<String, dynamic>) onEdit;
@@ -1579,41 +1450,35 @@ class OwnerMenu extends StatelessWidget {
           width: 32, height: 32,
           decoration: BoxDecoration(
               color: _kVioletSoft, shape: BoxShape.circle),
-          child: const Icon(Icons.more_horiz_rounded,
-              color: _kViolet, size: 18)),
+          child: const Icon(Icons.more_horiz_rounded, color: _kViolet, size: 18)),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      elevation: 8,
-      color: Colors.white,
+      elevation: 8, color: Colors.white,
       offset: const Offset(0, 38),
       itemBuilder: (_) => [
-        _menuItem('edit',   Icons.edit_rounded, 'Edit Post', _kSky),
-        // Only show Reopen when already resolved — resolving is done via Accept Solution
-        if (post['status'] == 'Resolved')
+        _menuItem('edit',   Icons.edit_rounded,         'Edit Post',   _kSky),
+        if ((post['status'] as String? ?? '') == 'Resolved')
           _menuItem('toggle', Icons.restart_alt_rounded, 'Reopen Post', _kMint),
         _menuItem('delete', Icons.delete_outline_rounded, 'Delete Post', _kBlush),
       ],
       onSelected: (val) {
-        if (val == 'edit')   { onEdit(post); }
-        if (val == 'toggle') { onToggle(post['id'], post['status']); }
-        if (val == 'delete') { onDelete(post['id']); }
+        if (val == 'edit')   onEdit(post);
+        if (val == 'toggle') onToggle(post['id'], post['status'] as String? ?? '');
+        if (val == 'delete') onDelete(post['id']);
       },
     );
   }
 
   PopupMenuItem<String> _menuItem(String value, IconData icon,
-      String label, Color color) {
-    return PopupMenuItem(
-      value: value,
-      child: Row(children: [
-        Container(width: 32, height: 32,
-            decoration: BoxDecoration(
-                color: color.withOpacity(0.10),
-                borderRadius: BorderRadius.circular(8)),
-            child: Icon(icon, color: color, size: 16)),
-        const SizedBox(width: 10),
-        Text(label, style: TextStyle(color: _kInk,
-            fontWeight: FontWeight.w600, fontSize: 13)),
-      ]),
-    );
-  }
+      String label, Color color) =>
+      PopupMenuItem(value: value,
+        child: Row(children: [
+          Container(width: 32, height: 32,
+              decoration: BoxDecoration(color: color.withOpacity(0.10),
+                  borderRadius: BorderRadius.circular(8)),
+              child: Icon(icon, color: color, size: 16)),
+          const SizedBox(width: 10),
+          Text(label, style: TextStyle(color: _kInk,
+              fontWeight: FontWeight.w600, fontSize: 13)),
+        ]),
+      );
 }
