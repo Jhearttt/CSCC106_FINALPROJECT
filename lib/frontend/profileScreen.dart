@@ -1,3 +1,5 @@
+import 'dart:convert';
+import 'dart:typed_data';
 import 'package:awesome_dialog/awesome_dialog.dart';
 import 'package:final_project/backend/databaseHelper.dart';
 import 'package:final_project/frontend/communityFeedScreen.dart';
@@ -462,6 +464,35 @@ class _ProfileScreenState extends State<ProfileScreen>
           children: [_buildPostsTab(), _buildSkillCardsTab()],
         )),
 
+        // ── Log out (only on own profile) ──
+        if (widget.isOwnProfile)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
+            child: SizedBox(width: double.infinity, height: 48,
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                    color: _kBlushSoft, borderRadius: BorderRadius.circular(28),
+                    border: Border.all(
+                        color: _kBlush.withOpacity(0.35), width: 1.5)),
+                child: OutlinedButton.icon(
+                  onPressed: () async {
+                    await AuthService().signOut();
+                    if (context.mounted) {
+                      Navigator.of(context).pushAndRemoveUntil(
+                          MaterialPageRoute(builder: (_) => const LoginScreen()),
+                              (r) => false);
+                    }
+                  },
+                  icon: const Icon(Icons.logout_rounded, color: _kBlush, size: 18),
+                  label: const Text("Log Out", style: TextStyle(
+                      color: _kBlush, fontWeight: FontWeight.w800, fontSize: 14)),
+                  style: OutlinedButton.styleFrom(side: BorderSide.none,
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(28))),
+                ),
+              ),
+            ),
+          ),
       ])),
     ]);
 
@@ -580,13 +611,48 @@ class _ProfileScreenState extends State<ProfileScreen>
     ]);
   }
 
+  // ── Image widget: handles base64 data URIs and network URLs ─────────────
+  // ignore: non_constant_identifier_names
+  Widget _ProfilePostImage({
+    required String src,
+    double? size,
+    BoxFit fit = BoxFit.cover,
+  }) {
+    final isBase64 = src.startsWith('data:image');
+    Widget img;
+    if (isBase64) {
+      try {
+        final comma = src.indexOf(',');
+        final bytes = base64Decode(src.substring(comma + 1));
+        img = Image.memory(bytes,
+            width: size, height: size, fit: fit,
+            errorBuilder: (_, __, ___) => _brokenImg(size));
+      } catch (_) {
+        img = _brokenImg(size);
+      }
+    } else {
+      img = Image.network(src,
+          width: size, height: size, fit: fit,
+          errorBuilder: (_, __, ___) => _brokenImg(size));
+    }
+    return SizedBox(width: size, height: size, child: img);
+  }
+
+  Widget _brokenImg(double? size) => Container(
+      width: size, height: size,
+      color: _kVioletSoft,
+      child: const Center(child: Icon(
+          Icons.broken_image_outlined, color: _kVioletLight)));
+
   // ── Post card with three-dot menu + tap to open detail ───────────────────
   Widget _buildPostCard(Map<String, dynamic> post) {
-    final isOpen    = post['status']   == 'Open';
+    final isOpen    = post['status']    == 'Open';
     final urgency   = post['urgencyLevel'] as String? ?? 'Low';
-    final isBoosted = (post['isBoosted'] as int? ?? 0) == 1;
+    final isBoosted = (post['isBoosted']   as int?    ?? 0) == 1;
     final urgencyColor = urgency == 'High' ? _kBlush
         : urgency == 'Medium' ? _kAmber : _kMint;
+    final imgUrl    = post['imageUrl'] as String?;
+    final hasImage  = imgUrl != null && imgUrl.isNotEmpty;
 
     return GestureDetector(
       onTap: () => _openPostDetail(post),
@@ -603,20 +669,21 @@ class _ProfileScreenState extends State<ProfileScreen>
               blurRadius: 12, offset: const Offset(0, 4))],
         ),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+
+          // ── Top row: title badges three-dot ──
           Row(children: [
             Expanded(child: Text(post['title'] ?? '', style: const TextStyle(
                 fontWeight: FontWeight.w800, fontSize: 13.5, color: _kInk))),
-            // Urgency badge — always visible
+            // Urgency badge
             Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                 decoration: BoxDecoration(
                     color: urgencyColor.withOpacity(0.12),
                     borderRadius: BorderRadius.circular(8)),
                 child: Row(mainAxisSize: MainAxisSize.min, children: [
-                  Icon(
-                      urgency == 'High'   ? Icons.arrow_upward_rounded
-                          : urgency == 'Medium' ? Icons.remove_rounded
-                          : Icons.arrow_downward_rounded,
+                  Icon(urgency == 'High'   ? Icons.arrow_upward_rounded
+                      : urgency == 'Medium' ? Icons.remove_rounded
+                      : Icons.arrow_downward_rounded,
                       size: 9, color: urgencyColor),
                   const SizedBox(width: 3),
                   Text(urgency, style: TextStyle(fontSize: 9.5,
@@ -633,33 +700,90 @@ class _ProfileScreenState extends State<ProfileScreen>
                         : const LinearGradient(
                         colors: [Color(0xFFD1FAE5), Color(0xFFA7F3D0)]),
                     borderRadius: BorderRadius.circular(8)),
-                child: Text(post['status'] ?? '', style: TextStyle(
-                    fontSize: 9.5, fontWeight: FontWeight.w800,
-                    color: isOpen ? const Color(0xFF9D174D)
-                        : const Color(0xFF065F46)))),
+                child: Text(post['status'] as String? ?? 'Open',
+                    style: TextStyle(
+                        fontSize: 9.5, fontWeight: FontWeight.w800,
+                        color: isOpen ? const Color(0xFF9D174D)
+                            : const Color(0xFF065F46)))),
             const SizedBox(width: 4),
-            // ── Three-dot menu — only on own profile ──
+            // Three-dot menu — only on own profile
             if (widget.isOwnProfile)
               GestureDetector(
                 onTap: () => _showPostOptions(context, post),
-                child: Container(
-                    width: 30, height: 30,
+                child: Container(width: 30, height: 30,
                     decoration: BoxDecoration(
                         color: _kVioletSoft, shape: BoxShape.circle),
                     child: const Icon(Icons.more_horiz_rounded,
                         color: _kViolet, size: 16)),
               ),
           ]),
-          const SizedBox(height: 5),
-          Text((post['description'] ?? '').length > 80
-              ? '${(post['description'] as String).substring(0, 80)}...'
-              : post['description'] ?? '',
-              style: const TextStyle(fontSize: 12.5, color: _kInkLight, height: 1.4)),
+
           const SizedBox(height: 8),
+
+          // ── Description + thumbnail row ──
+          Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            // Description text
+            Expanded(
+              child: Text(
+                  (post['description'] as String? ?? '').length > (hasImage ? 60 : 80)
+                      ? '${(post['description'] as String? ?? '').substring(0, hasImage ? 60 : 80)}...'
+                      : post['description'] as String? ?? '',
+                  style: const TextStyle(
+                      fontSize: 12.5, color: _kInkLight, height: 1.4)),
+            ),
+
+            // ── Side thumbnail ──
+            if (hasImage) ...[
+              const SizedBox(width: 10),
+              GestureDetector(
+                onTap: () => _openImageFullScreen(context, imgUrl),
+                child: Stack(children: [
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(10),
+                    child: _ProfilePostImage(src: imgUrl, size: 68),
+                  ),
+                  // Expand hint
+                  Positioned.fill(
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(10),
+                      child: Container(
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                              colors: [Colors.transparent,
+                                Colors.black.withOpacity(0.35)],
+                              begin: Alignment.topCenter,
+                              end: Alignment.bottomCenter),
+                        ),
+                        alignment: Alignment.bottomCenter,
+                        padding: const EdgeInsets.only(bottom: 4),
+                        child: const Icon(Icons.fullscreen_rounded,
+                            color: Colors.white, size: 13),
+                      ),
+                    ),
+                  ),
+                  // Border
+                  Positioned.fill(
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(10),
+                      child: Container(
+                        decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: _kBorderGlass, width: 1.2)),
+                      ),
+                    ),
+                  ),
+                ]),
+              ),
+            ],
+          ]),
+
+          const SizedBox(height: 8),
+
+          // ── Chips + date ──
           Row(children: [
-            _chip(post['postType'], _kVioletSoft, _kVioletLight),
+            _chip(post['postType'] as String? ?? 'Post', _kVioletSoft, _kVioletLight),
             const SizedBox(width: 6),
-            _chip(post['category'], _kSkySoft, _kSky),
+            _chip(post['category'] as String? ?? 'Others', _kSkySoft, _kSky),
             if (isBoosted) ...[
               const SizedBox(width: 6),
               _chip('🚀 Boosted', _kAmber.withOpacity(0.12), _kAmber),
@@ -669,8 +793,40 @@ class _ProfileScreenState extends State<ProfileScreen>
                 style: const TextStyle(fontSize: 10.5, color: _kInkMuted)),
           ]),
         ]),
-      ), // end Container
-    ); // end GestureDetector
+      ),
+    );
+  }
+
+  // ── Full-screen image viewer (base64 + network) ───────────────────────────
+  void _openImageFullScreen(BuildContext context, String src) {
+    Navigator.of(context).push(PageRouteBuilder(
+      opaque: false,
+      barrierColor: Colors.black87,
+      pageBuilder: (_, anim, __) => FadeTransition(
+        opacity: anim,
+        child: Scaffold(
+          backgroundColor: Colors.transparent,
+          body: Stack(children: [
+            GestureDetector(onTap: () => Navigator.pop(context),
+                child: Container(color: Colors.black87)),
+            Center(child: InteractiveViewer(
+              minScale: 0.5, maxScale: 4.0,
+              child: _ProfilePostImage(src: src, fit: BoxFit.contain),
+            )),
+            Positioned(top: 48, right: 16,
+                child: GestureDetector(onTap: () => Navigator.pop(context),
+                    child: Container(width: 38, height: 38,
+                        decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.15),
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                                color: Colors.white.withOpacity(0.30), width: 1)),
+                        child: const Icon(Icons.close_rounded,
+                            color: Colors.white, size: 20)))),
+          ]),
+        ),
+      ),
+    ));
   }
 
   Widget _chip(String label, Color bg, Color fg) => Container(

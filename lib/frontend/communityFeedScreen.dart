@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
 import 'package:awesome_dialog/awesome_dialog.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:final_project/backend/databaseHelper.dart';
@@ -98,6 +100,74 @@ class _AnimatedPostCardState extends State<_AnimatedPostCard>
 }
 
 // ─── Community Feed Screen ────────────────────────────────────────────────────
+// ─── Smart image widget: renders base64 data URIs or network URLs ─────────────
+class _PostImage extends StatelessWidget {
+  final String   src;       // either "data:image/...;base64,..." or a URL
+  final double?  height;
+  final BoxFit   fit;
+  final Widget   Function(BuildContext, Object, StackTrace?)? errorBuilder;
+
+  const _PostImage({
+    required this.src,
+    this.height,
+    this.fit = BoxFit.cover,
+    this.errorBuilder,
+  });
+
+  bool get _isBase64 => src.startsWith('data:image');
+
+  Uint8List? get _bytes {
+    try {
+      final comma = src.indexOf(',');
+      if (comma == -1) return null;
+      return base64Decode(src.substring(comma + 1));
+    } catch (_) { return null; }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_isBase64) {
+      final bytes = _bytes;
+      if (bytes == null) {
+        return _broken(context);
+      }
+      return Image.memory(
+        bytes,
+        height:       height,
+        width:        double.infinity,
+        fit:          fit,
+        errorBuilder: (_, __, ___) => _broken(context),
+      );
+    }
+    // Network URL fallback
+    return Image.network(
+      src,
+      height:       height,
+      width:        double.infinity,
+      fit:          fit,
+      loadingBuilder: (_, child, progress) => progress == null
+          ? child
+          : SizedBox(
+        height: height ?? 160,
+        child: Center(child: CircularProgressIndicator(
+            color: _kViolet,
+            value: progress.expectedTotalBytes != null
+                ? progress.cumulativeBytesLoaded /
+                progress.expectedTotalBytes!
+                : null)),
+      ),
+      errorBuilder: errorBuilder ?? (_, __, ___) => _broken(context),
+    );
+  }
+
+  Widget _broken(BuildContext context) => Container(
+    height: height ?? 60,
+    color:  _kVioletSoft,
+    child:  const Center(child: Icon(
+        Icons.broken_image_outlined, color: _kVioletLight)),
+  );
+}
+
 class CommunityFeedScreen extends StatefulWidget {
   final int? localUserId;
   const CommunityFeedScreen({super.key, this.localUserId});
@@ -155,13 +225,20 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
 
   // ── Data loading ──────────────────────────────────────────────────────────
   Future<void> _loadPosts() async {
-    setState(() => _loading = true);
-    await DatabaseHelper().checkAndBoostExpiredPosts();
-    await DatabaseHelper().syncCommentCounts(); // fix counts for pre-v4 comments
-    await SyncService.instance.pullPostsFromFirestore();
-    await _queryLocal();
-    await _loadUnreadCount();
-    if (mounted) setState(() => _loading = false);
+    if (mounted) setState(() => _loading = true);
+    try {
+      await DatabaseHelper().checkAndBoostExpiredPosts();
+      await DatabaseHelper().syncCommentCounts();
+      await SyncService.instance.pullPostsFromFirestore();
+      await _queryLocal();
+      await _loadUnreadCount();
+    } catch (e, stack) {
+      debugPrint('[CommunityFeed] _loadPosts error: $e\n$stack');
+      // Still try to show whatever is cached locally
+      try { await _queryLocal(); } catch (_) {}
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
   }
 
   Future<void> _loadUnreadCount() async {
@@ -172,31 +249,32 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
   }
 
   Future<void> _queryLocal() async {
-    final raw = await DatabaseHelper().getAllPosts(
-      postType: _typeFilter == 'All' ? null : _typeFilter,
-      category: (_catFilter == null || _catFilter == 'All') ? null : _catFilter,
-    );
+    try {
+      final raw = await DatabaseHelper().getAllPosts(
+        postType: _typeFilter == 'All' ? null : _typeFilter,
+        category: (_catFilter == null || _catFilter == 'All') ? null : _catFilter,
+      );
 
-    // Urgency rank: High = 0, Medium = 1, Low = 2
-    int _urgencyRank(String u) => u == 'High' ? 0 : u == 'Medium' ? 1 : 2;
+      int _urgencyRank(String u) => u == 'High' ? 0 : u == 'Medium' ? 1 : 2;
 
-    // Open posts sorted by urgency (High first), then by date within same urgency
-    final open = raw.where((p) => p['status'] != 'Resolved').toList()
-      ..sort((a, b) {
-        final uA = _urgencyRank(a['urgencyLevel'] as String? ?? 'Low');
-        final uB = _urgencyRank(b['urgencyLevel'] as String? ?? 'Low');
-        if (uA != uB) return uA.compareTo(uB);
-        // Same urgency → newer first
-        return (b['datePosted'] as String? ?? '')
-            .compareTo(a['datePosted'] as String? ?? '');
-      });
+      final open = raw.where((p) => p['status'] != 'Resolved').toList()
+        ..sort((a, b) {
+          final uA = _urgencyRank(a['urgencyLevel'] as String? ?? 'Low');
+          final uB = _urgencyRank(b['urgencyLevel'] as String? ?? 'Low');
+          if (uA != uB) return uA.compareTo(uB);
+          return (b['datePosted'] as String? ?? '')
+              .compareTo(a['datePosted'] as String? ?? '');
+        });
 
-    // Resolved posts always at bottom, sorted by date descending
-    final resolved = raw.where((p) => p['status'] == 'Resolved').toList()
-      ..sort((a, b) => (b['datePosted'] as String? ?? '')
-          .compareTo(a['datePosted'] as String? ?? ''));
+      final resolved = raw.where((p) => p['status'] == 'Resolved').toList()
+        ..sort((a, b) => (b['datePosted'] as String? ?? '')
+            .compareTo(a['datePosted'] as String? ?? ''));
 
-    if (mounted) setState(() => _posts = [...open, ...resolved]);
+      if (mounted) setState(() => _posts = [...open, ...resolved]);
+    } catch (e) {
+      debugPrint('[CommunityFeed] _queryLocal error: $e');
+      if (mounted) setState(() => _posts = []);
+    }
   }
 
   // ── Real-time Firestore stream ────────────────────────────────────────────
@@ -211,8 +289,16 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
           .where((c) => c.type == DocumentChangeType.added).length;
       if (added > 0 && !_loading) {
         await SyncService.instance.pullPostsFromFirestore();
+        await _queryLocal();
+
+        // reload local posts immediately
+        await _queryLocal();
+
         if (mounted) {
-          setState(() { _pendingNewPosts += added; _showNewBanner = true; });
+          setState(() {
+            _pendingNewPosts += added;
+            _showNewBanner = true;
+          });
           _bannerCtrl.forward();
         }
       }
@@ -234,19 +320,26 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
   // ── Search ────────────────────────────────────────────────────────────────
   Future<void> _search(String kw) async {
     if (kw.trim().isEmpty) { _loadPosts(); return; }
-    setState(() => _loading = true);
-    final raw = await DatabaseHelper().searchPosts(kw.trim());
-    int _urgencyRank(String u) => u == 'High' ? 0 : u == 'Medium' ? 1 : 2;
-    final open = raw.where((p) => p['status'] != 'Resolved').toList()
-      ..sort((a, b) {
-        final uA = _urgencyRank(a['urgencyLevel'] as String? ?? 'Low');
-        final uB = _urgencyRank(b['urgencyLevel'] as String? ?? 'Low');
-        if (uA != uB) return uA.compareTo(uB);
-        return (b['datePosted'] as String? ?? '')
-            .compareTo(a['datePosted'] as String? ?? '');
-      });
-    final resolved = raw.where((p) => p['status'] == 'Resolved').toList();
-    if (mounted) setState(() { _posts = [...open, ...resolved]; _loading = false; });
+    if (mounted) setState(() => _loading = true);
+    try {
+      final raw = await DatabaseHelper().searchPosts(kw.trim());
+      int _urgencyRank(String u) => u == 'High' ? 0 : u == 'Medium' ? 1 : 2;
+      final open = raw.where((p) => p['status'] != 'Resolved').toList()
+        ..sort((a, b) {
+          final uA = _urgencyRank(a['urgencyLevel'] as String? ?? 'Low');
+          final uB = _urgencyRank(b['urgencyLevel'] as String? ?? 'Low');
+          if (uA != uB) return uA.compareTo(uB);
+          return (b['datePosted'] as String? ?? '')
+              .compareTo(a['datePosted'] as String? ?? '');
+        });
+      final resolved = raw.where((p) => p['status'] == 'Resolved').toList();
+      if (mounted) setState(() => _posts = [...open, ...resolved]);
+    } catch (e) {
+      debugPrint('[CommunityFeed] _search error: $e');
+      if (mounted) setState(() => _posts = []);
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
   }
 
   // ── Delete ────────────────────────────────────────────────────────────────
@@ -318,8 +411,8 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
     );
   }
 
-  // ── Full screen image viewer ──────────────────────────────────────────────
-  void _openFullScreenImage(BuildContext context, String url) {
+  // ── Full screen image viewer (handles base64 + network URLs) ────────────
+  void _openFullScreenImage(BuildContext context, String src) {
     Navigator.of(context).push(PageRouteBuilder(
       opaque: false,
       barrierColor: Colors.black87,
@@ -330,12 +423,10 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
           body: Stack(children: [
             GestureDetector(onTap: () => Navigator.pop(context),
                 child: Container(color: Colors.black87)),
-            Center(child: InteractiveViewer(minScale: 0.5, maxScale: 4.0,
-                child: Image.network(url, fit: BoxFit.contain,
-                  loadingBuilder: (_, c, p) => p == null ? c
-                      : const Center(child: CircularProgressIndicator(
-                      color: Colors.white)),
-                ))),
+            Center(child: InteractiveViewer(
+              minScale: 0.5, maxScale: 4.0,
+              child: _PostImage(src: src, fit: BoxFit.contain),
+            )),
             Positioned(top: 48, right: 16,
                 child: GestureDetector(onTap: () => Navigator.pop(context),
                     child: Container(width: 38, height: 38,
@@ -390,7 +481,35 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
                 fontWeight: FontWeight.w900, color: _kInk, letterSpacing: -0.4)),
             const Spacer(),
             // ── Bell notification button ──
-
+            GestureDetector(
+              onTap: () => Navigator.push(context, MaterialPageRoute(
+                  builder: (_) => NotificationsScreen(
+                      localUserId: widget.localUserId)))
+                  .then((_) => _loadUnreadCount()),
+              child: Stack(clipBehavior: Clip.none, children: [
+                Container(
+                    width: 38, height: 38,
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.75),
+                      shape: BoxShape.circle,
+                      border: Border.all(color: _kBorderGlass, width: 1.2),
+                      boxShadow: [BoxShadow(color: _kViolet.withOpacity(0.10),
+                          blurRadius: 8, offset: const Offset(0, 3))],
+                    ),
+                    child: const Icon(Icons.notifications_outlined,
+                        color: _kViolet, size: 20)),
+                if (_unreadCount > 0)
+                  Positioned(top: -2, right: -2,
+                      child: Container(
+                          width: 17, height: 17,
+                          decoration: const BoxDecoration(
+                              color: _kBlush, shape: BoxShape.circle),
+                          child: Center(child: Text(
+                              _unreadCount > 9 ? '9+' : '$_unreadCount',
+                              style: const TextStyle(color: Colors.white,
+                                  fontSize: 9, fontWeight: FontWeight.w800))))),
+              ]),
+            ),
             const SizedBox(width: 8),
             // Connectivity badge
             AnimatedContainer(
@@ -407,7 +526,10 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
                         color: _isOnline ? _kMint : Colors.orange,
                         shape: BoxShape.circle)),
                 const SizedBox(width: 5),
-
+                Text(_isOnline ? 'Live' : 'Offline',
+                    style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700,
+                        color: _isOnline ? const Color(0xFF065F46)
+                            : Colors.orange.shade800)),
               ]),
             ),
           ]),
@@ -679,12 +801,32 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
 
   // ── Post card (feed) ──────────────────────────────────────────────────────
   Widget _buildPostCard(Map<String, dynamic> post) {
+    try {
+      return _buildPostCardInner(post);
+    } catch (e) {
+      debugPrint('[CommunityFeed] card render error: $e  post=${post['id']}');
+      // Fallback minimal card so the list keeps rendering
+      return Container(
+        margin: const EdgeInsets.only(bottom: 12),
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: Colors.white.withOpacity(0.70),
+          borderRadius: BorderRadius.circular(22),
+          border: Border.all(color: _kBorderGlass),
+        ),
+        child: Text(post['title'] as String? ?? '(post)',
+            style: const TextStyle(color: _kInkMuted, fontSize: 13)),
+      );
+    }
+  }
+
+  Widget _buildPostCardInner(Map<String, dynamic> post) {
     final isOpen    = post['status']   == 'Open';
     final isHelpReq = post['postType'] == 'Help Request';
     final isOwner   = widget.localUserId != null &&
         post['userId'] == widget.localUserId;
-    final initials  = (post['userFullName'] as String? ?? '?').isNotEmpty
-        ? (post['userFullName'] as String)[0].toUpperCase() : '?';
+    final _fullName = post['userFullName'] as String? ?? '';
+    final initials  = _fullName.isNotEmpty ? _fullName[0].toUpperCase() : '?';
     final photoUrl  = post['userProfilePic'] as String?;
     final urgency   = post['urgencyLevel'] as String? ?? 'Low';
     final isBoosted = (post['isBoosted'] as int? ?? 0) == 1;
@@ -768,30 +910,97 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
                             ? _kBlush.withOpacity(0.40)
                             : _kMint.withOpacity(0.40), width: 1),
                   ),
-                  child: Text(post['status'], style: TextStyle(fontSize: 10,
-                      fontWeight: FontWeight.w800,
-                      color: isOpen
-                          ? const Color(0xFF9D174D)
-                          : const Color(0xFF065F46)))),
+                  child: Text(post['status'] as String? ?? 'Open',
+                      style: TextStyle(fontSize: 10,
+                          fontWeight: FontWeight.w800,
+                          color: isOpen
+                              ? const Color(0xFF9D174D)
+                              : const Color(0xFF065F46)))),
             ]),
 
             const SizedBox(height: 9),
 
-            // ── Title ──
-            Text(post['title'] ?? '', style: TextStyle(
-                fontWeight: FontWeight.w800, fontSize: 14.5,
-                color: isOpen ? _kInk : _kInkLight,
-                letterSpacing: -0.2)),
-            const SizedBox(height: 4),
+            // ── Title + description + thumbnail row ──
+            Builder(builder: (_) {
+              final _imgUrl  = post['imageUrl'] as String?;
+              final hasImage = _imgUrl != null && _imgUrl.isNotEmpty;
+              return Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Text section
+                  Expanded(child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(post['title'] ?? '', style: TextStyle(
+                            fontWeight: FontWeight.w800, fontSize: 14.5,
+                            color: isOpen ? _kInk : _kInkLight,
+                            letterSpacing: -0.2)),
+                        const SizedBox(height: 4),
+                        Text(
+                          (post['description'] ?? '').length > (hasImage ? 60 : 90)
+                              ? '${(post['description'] as String? ?? '')
+                              .substring(0, hasImage ? 60 : 90)}...'
+                              : post['description'] ?? '',
+                          style: TextStyle(fontSize: 12.5,
+                              color: isOpen ? _kInkLight : _kInkMuted,
+                              height: 1.4),
+                        ),
+                      ])),
 
-            // ── Description preview ──
-            Text(
-              (post['description'] ?? '').length > 90
-                  ? '${(post['description'] as String).substring(0, 90)}...'
-                  : post['description'] ?? '',
-              style: TextStyle(fontSize: 12.5,
-                  color: isOpen ? _kInkLight : _kInkMuted, height: 1.4),
-            ),
+                  // ── Thumbnail (always visible if image exists) ──
+                  if (hasImage) ...[
+                    const SizedBox(width: 10),
+                    GestureDetector(
+                      onTap: () => _openFullScreenImage(
+                          context, post['imageUrl'] as String? ?? ''),
+                      child: Stack(children: [
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(12),
+                          child: _PostImage(
+                            src:    post['imageUrl'] as String? ?? '',
+                            height: 72,
+                            fit:    BoxFit.cover,
+                          ),
+                        ),
+                        // Expand icon overlay
+                        Positioned.fill(
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(12),
+                            child: Container(
+                              width: 72, height: 72,
+                              decoration: BoxDecoration(
+                                gradient: LinearGradient(
+                                  colors: [Colors.transparent,
+                                    Colors.black.withOpacity(0.35)],
+                                  begin: Alignment.topCenter,
+                                  end: Alignment.bottomCenter,
+                                ),
+                              ),
+                              alignment: Alignment.bottomCenter,
+                              padding: const EdgeInsets.only(bottom: 5),
+                              child: const Icon(Icons.fullscreen_rounded,
+                                  color: Colors.white, size: 14),
+                            ),
+                          ),
+                        ),
+                        // Outer border
+                        Positioned.fill(child: ClipRRect(
+                          borderRadius: BorderRadius.circular(12),
+                          child: Container(
+                            width: 72, height: 72,
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(
+                                  color: _kBorderGlass, width: 1.2),
+                            ),
+                          ),
+                        )),
+                      ]),
+                    ),
+                  ],
+                ],
+              );
+            }),
 
             const SizedBox(height: 10),
 
@@ -800,12 +1009,13 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
               _chip(
                 isHelpReq ? Icons.help_outline_rounded
                     : Icons.lightbulb_outline_rounded,
-                post['postType'],
+                post['postType'] as String? ?? 'Post',
                 isHelpReq ? _kSkySoft : _kMintSoft,
                 isHelpReq ? _kSky     : _kMint,
               ),
               const SizedBox(width: 6),
-              _chip(Icons.label_outline_rounded, post['category'],
+              _chip(Icons.label_outline_rounded,
+                  post['category'] as String? ?? 'Others',
                   _kVioletSoft, _kVioletLight),
               const SizedBox(width: 6),
               // ── Comment count — always visible, tap to open ──
@@ -861,7 +1071,16 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
                 );
               }),
               const Spacer(),
-
+              // Owner edit/delete buttons
+              if (isOwner) ...[
+                GestureDetector(
+                    onTap: () => _goToCreate(existingPost: post),
+                    child: _iconBtn(Icons.edit_rounded, _kSkySoft, _kSky)),
+                const SizedBox(width: 6),
+                GestureDetector(
+                    onTap: () => _deletePost(post['id']),
+                    child: _iconBtn(Icons.delete_rounded, _kBlushSoft, _kBlush)),
+              ],
             ]),
           ]),
         ),
@@ -936,8 +1155,8 @@ class PostDetailCard extends StatelessWidget {
     final isOwner   = localUserId != null && post['userId'] == localUserId;
     final urgency   = post['urgencyLevel'] as String? ?? 'Low';
     final photoUrl  = post['userProfilePic'] as String?;
-    final initials  = (post['userFullName'] as String? ?? '?').isNotEmpty
-        ? (post['userFullName'] as String)[0].toUpperCase() : '?';
+    final _fullName = post['userFullName'] as String? ?? '';
+    final initials  = _fullName.isNotEmpty ? _fullName[0].toUpperCase() : '?';
     final urgencyColor = urgency == 'High'   ? _kBlush
         : urgency == 'Medium' ? const Color(0xFFFCD34D) : _kMint;
 
@@ -1045,19 +1264,93 @@ class PostDetailCard extends StatelessWidget {
                   Text(post['description'] ?? '', style: const TextStyle(
                       fontSize: 13.5, color: _kInkLight, height: 1.55)),
 
-                  // ── Image ──
+                  // ── Image — tap to expand full screen ──
                   if ((post['imageUrl'] as String?) != null &&
-                      (post['imageUrl'] as String).isNotEmpty) ...[
+                      (post['imageUrl'] as String? ?? '').isNotEmpty) ...[
                     const SizedBox(height: 14),
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(14),
-                      child: Image.network(post['imageUrl'] as String,
-                          width: double.infinity, fit: BoxFit.cover,
-                          loadingBuilder: (_, c, p) => p == null ? c
-                              : Container(height: 160, color: _kVioletSoft,
-                              child: const Center(child:
-                              CircularProgressIndicator(color: _kViolet))),
-                          errorBuilder: (_, __, ___) => const SizedBox.shrink()),
+                    GestureDetector(
+                      onTap: () {
+                        Navigator.of(context).push(PageRouteBuilder(
+                          opaque: false,
+                          barrierColor: Colors.black87,
+                          pageBuilder: (ctx, anim, __) => FadeTransition(
+                            opacity: anim,
+                            child: Scaffold(
+                              backgroundColor: Colors.transparent,
+                              body: Stack(children: [
+                                GestureDetector(
+                                    onTap: () => Navigator.pop(ctx),
+                                    child: Container(color: Colors.black87)),
+                                Center(child: InteractiveViewer(
+                                  minScale: 0.5, maxScale: 4.0,
+                                  child: _PostImage(
+                                    src: post['imageUrl'] as String? ?? '',
+                                    fit: BoxFit.contain,
+                                  ),
+                                )),
+                                Positioned(top: 48, right: 16,
+                                    child: GestureDetector(
+                                      onTap: () => Navigator.pop(ctx),
+                                      child: Container(width: 40, height: 40,
+                                          decoration: BoxDecoration(
+                                            color: Colors.white.withOpacity(0.15),
+                                            shape: BoxShape.circle,
+                                            border: Border.all(
+                                                color: Colors.white.withOpacity(0.30),
+                                                width: 1),
+                                          ),
+                                          child: const Icon(Icons.close_rounded,
+                                              color: Colors.white, size: 20)),
+                                    )),
+                              ]),
+                            ),
+                          ),
+                        ));
+                      },
+                      child: Stack(children: [
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(14),
+                          child: _PostImage(
+                            src: post['imageUrl'] as String? ?? '',
+                            fit: BoxFit.cover,
+                            errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                          ),
+                        ),
+                        // Expand hint overlay
+                        Positioned.fill(
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(14),
+                            child: Container(
+                              decoration: BoxDecoration(
+                                gradient: LinearGradient(
+                                  colors: [Colors.transparent,
+                                    Colors.black.withOpacity(0.28)],
+                                  begin: Alignment.topCenter,
+                                  end: Alignment.bottomCenter,
+                                ),
+                              ),
+                              alignment: Alignment.bottomRight,
+                              padding: const EdgeInsets.all(10),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 9, vertical: 5),
+                                decoration: BoxDecoration(
+                                    color: Colors.black.withOpacity(0.45),
+                                    borderRadius: BorderRadius.circular(10)),
+                                child: const Row(mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(Icons.fullscreen_rounded,
+                                          color: Colors.white, size: 14),
+                                      SizedBox(width: 4),
+                                      Text("Expand", style: TextStyle(
+                                          color: Colors.white, fontSize: 10.5,
+                                          fontWeight: FontWeight.w600)),
+                                    ]),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ]),
                     ),
                   ],
 

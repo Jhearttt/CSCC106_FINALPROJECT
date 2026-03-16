@@ -1,8 +1,11 @@
+import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:awesome_dialog/awesome_dialog.dart';
 import 'package:final_project/backend/databaseHelper.dart';
 import 'package:final_project/services/syncService.dart';
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 
 // ─── Palette ──────────────────────────────────────────────────────────────────
 const _kInk         = Color(0xFF1E1B4B);
@@ -69,6 +72,7 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
   File?   _pickedImage;
   String? _existingImageUrl;
   bool    _removeExistingImage = false;
+  final   _picker = ImagePicker();
 
   bool get _isEditMode => widget.existingPost != null;
 
@@ -155,7 +159,44 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
           boxShadow: [BoxShadow(color: _kViolet.withOpacity(0.15),
               blurRadius: 24, offset: const Offset(0, 8))],
         ),
-
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Container(width: 36, height: 4,
+              margin: const EdgeInsets.only(top: 12, bottom: 8),
+              decoration: BoxDecoration(color: _kBorderGlass,
+                  borderRadius: BorderRadius.circular(2))),
+          const Padding(
+            padding: EdgeInsets.fromLTRB(20, 8, 20, 8),
+            child: Text("Add Photo", style: TextStyle(fontSize: 16,
+                fontWeight: FontWeight.w800, color: _kInk)),
+          ),
+          const Divider(height: 1),
+          _pickerOption(Icons.photo_library_rounded, "Choose from Gallery",
+              _kViolet, () async {
+                Navigator.pop(context);
+                final xf = await _picker.pickImage(
+                    source: ImageSource.gallery, imageQuality: 80);
+                if (xf != null && mounted) setState(() {
+                  _pickedImage = File(xf.path); _removeExistingImage = false;
+                });
+              }),
+          _pickerOption(Icons.camera_alt_rounded, "Take a Photo", _kSky,
+                  () async {
+                Navigator.pop(context);
+                final xf = await _picker.pickImage(
+                    source: ImageSource.camera, imageQuality: 80);
+                if (xf != null && mounted) setState(() {
+                  _pickedImage = File(xf.path); _removeExistingImage = false;
+                });
+              }),
+          if (_pickedImage != null ||
+              (_existingImageUrl != null && !_removeExistingImage))
+            _pickerOption(Icons.delete_outline_rounded, "Remove Photo",
+                _kBlush, () {
+                  Navigator.pop(context);
+                  setState(() { _pickedImage = null; _removeExistingImage = true; });
+                }),
+          const SizedBox(height: 12),
+        ]),
       ),
     );
   }
@@ -626,14 +667,26 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
         clipBehavior: Clip.antiAlias,
         child: hasAny
             ? Stack(fit: StackFit.expand, children: [
-          hasLocal
-              ? Image.file(_pickedImage!, fit: BoxFit.cover)
-              : Image.network(_existingImageUrl!, fit: BoxFit.cover,
-            loadingBuilder: (_, child, p) => p == null ? child
-                : Center(child: CircularProgressIndicator(color: _kViolet,
-                value: p.expectedTotalBytes != null
-                    ? p.cumulativeBytesLoaded / p.expectedTotalBytes! : null)),
-          ),
+          // Local newly-picked file
+          if (hasLocal)
+            Image.file(_pickedImage!, fit: BoxFit.cover)
+          // Existing image — base64 data URI or legacy network URL
+          else if (_existingImageUrl!.startsWith('data:image'))
+            Image.memory(
+              _decodeBase64(_existingImageUrl!),
+              fit: BoxFit.cover,
+              errorBuilder: (_, __, ___) => _brokenImage(),
+            )
+          else
+            Image.network(_existingImageUrl!, fit: BoxFit.cover,
+              loadingBuilder: (_, child, p) => p == null ? child
+                  : Center(child: CircularProgressIndicator(
+                  color: _kViolet,
+                  value: p.expectedTotalBytes != null
+                      ? p.cumulativeBytesLoaded / p.expectedTotalBytes!
+                      : null)),
+              errorBuilder: (_, __, ___) => _brokenImage(),
+            ),
           Positioned(top: 8, right: 8, child: Row(children: [
             _overlayBtn(Icons.edit_rounded, _kViolet, _showImagePicker),
             const SizedBox(width: 6),
@@ -656,6 +709,18 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
       ),
     );
   }
+
+  /// Decode a base64 data URI string to raw bytes for Image.memory
+  Uint8List _decodeBase64(String dataUri) {
+    final comma = dataUri.indexOf(',');
+    if (comma == -1) return Uint8List(0);
+    return base64Decode(dataUri.substring(comma + 1));
+  }
+
+  Widget _brokenImage() => Container(
+      color: _kBase,
+      child: const Center(child: Icon(
+          Icons.broken_image_outlined, color: _kInkMuted, size: 32)));
 
   Widget _overlayBtn(IconData icon, Color color, VoidCallback onTap) =>
       GestureDetector(onTap: onTap,

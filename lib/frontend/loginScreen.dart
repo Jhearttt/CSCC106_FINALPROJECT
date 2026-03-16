@@ -5,6 +5,7 @@ import 'package:final_project/backend/databaseHelper.dart';
 import 'package:final_project/frontend/homePage.dart';
 import 'package:final_project/frontend/signUpScreen.dart';
 import 'package:final_project/GoogleServices/auth_service.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 // ─── Palette ──────────────────────────────────────────────────────────────────
@@ -322,31 +323,77 @@ class _LoginScreenHomeState extends State<LoginScreenHome>
   }
 
   Future<void> _googleLogin() async {
+    setState(() => _isLoading = true);
     try {
       final user = await AuthService().signInWithGoogle();
       if (user != null && mounted) {
         developer.log('Google: ${user.email}', name: 'Login');
         final db  = DatabaseHelper();
         final all = await db.getAllUsers();
-        final ex  = all.firstWhere((u) => u['email'] == user.email, orElse: () => {});
-        final localId = ex.isNotEmpty ? ex['id'] as int
+        final ex  = all.firstWhere(
+                (u) => u['email'] == user.email, orElse: () => {});
+        final localId = ex.isNotEmpty
+            ? ex['id'] as int
             : await db.insertUser(
-            fullName: user.displayName ?? 'Google User',
-            userName: user.email?.split('@')[0] ??
+            fullName:   user.displayName ?? 'Google User',
+            userName:   user.email?.split('@')[0] ??
                 'user_${DateTime.now().millisecondsSinceEpoch}',
-            password: '', email: user.email, profilePic: user.photoURL);
-        if (mounted) Navigator.of(context).pushReplacement(
-            MaterialPageRoute(builder: (_) => Homepage(localUserId: localId)));
+            password:   '',
+            email:      user.email,
+            profilePic: user.photoURL);
+        if (mounted) {
+          Navigator.of(context).pushReplacement(
+              MaterialPageRoute(
+                  builder: (_) => Homepage(localUserId: localId)));
+        }
+      } else {
+        // User cancelled the Google sign-in flow
+        if (mounted) setState(() => _isLoading = false);
+      }
+    } on FirebaseAuthException catch (e) {
+      if (!mounted) return;
+      setState(() => _isLoading = false);
+      switch (e.code) {
+        case 'network-request-failed':
+          _err(
+            "No internet connection.\n\n"
+                "Please check your Wi-Fi or mobile data and try again.",
+            isNetwork: true,
+          );
+          break;
+        case 'account-exists-with-different-credential':
+          _err("An account already exists with this email using a different sign-in method.");
+          break;
+        case 'invalid-credential':
+          _err("Your Google credentials are invalid or have expired. Please try again.");
+          break;
+        case 'user-disabled':
+          _err("This account has been disabled. Please contact support.");
+          break;
+        default:
+          _err("Google sign-in failed (${e.code}). Please try again.");
       }
     } catch (e) {
-      if (mounted) _err('Google sign-in failed. Please try again.');
+      if (!mounted) return;
+      setState(() => _isLoading = false);
+      // User likely cancelled the Google picker — don't show an error
+      if (e.toString().contains('sign_in_canceled') ||
+          e.toString().contains('canceled') ||
+          e.toString().contains('PlatformException')) return;
+      _err('Google sign-in failed. Please try again.');
     }
   }
 
-  void _err(String msg) {
-    AwesomeDialog(context: context, dialogType: DialogType.error,
-        title: 'Oops!', desc: msg,
-        btnOkColor: _kV1, btnOkOnPress: () {}).show();
+  void _err(String msg, {bool isNetwork = false}) {
+    AwesomeDialog(
+      context:    context,
+      dialogType: isNetwork ? DialogType.warning : DialogType.error,
+      animType:   AnimType.scale,
+      title:      isNetwork ? 'No Connection' : 'Oops!',
+      desc:       msg,
+      btnOkColor: _kV1,
+      btnOkOnPress: () {},
+    ).show();
   }
 
   @override
@@ -439,22 +486,13 @@ class _LoginScreenHomeState extends State<LoginScreenHome>
                           const SizedBox(height: 18),
 
                           // ── App name ──
-                          // ── App name ──
-                          Text(
-                            "CampusAid",
-                            style: TextStyle(
-                              fontSize: 38,
-                              fontWeight: FontWeight.w900,
-                              letterSpacing: -1.5,
-                              color: Colors.white,
-                              shadows: [
-                                Shadow(
-                                  color: Colors.black.withOpacity(0.35),
-                                  blurRadius: 18,
-                                  offset: const Offset(0, 4),
-                                ),
-                              ],
-                            ),
+                          ShaderMask(
+                            shaderCallback: (b) => _grad.createShader(b),
+                            child: const Text("CampusAid",
+                                style: TextStyle(fontSize: 38,
+                                    fontWeight: FontWeight.w900,
+                                    color: Colors.white,
+                                    letterSpacing: -1.5)),
                           ),
                           const SizedBox(height: 6),
                           Row(mainAxisAlignment: MainAxisAlignment.center,
@@ -509,15 +547,13 @@ class _LoginScreenHomeState extends State<LoginScreenHome>
                                         color: Colors.white, size: 17)),
                                 const SizedBox(width: 10),
                                 const Text("Sign In", style: TextStyle(
-                                    fontSize: 20, fontWeight: FontWeight.w800,
+                                    fontSize: 17, fontWeight: FontWeight.w800,
                                     color: Colors.white)),
                                 const Spacer(),
-                                Text("Welcome back!",
+                                Text("Welcome back 👋",
                                     style: TextStyle(
                                         fontSize: 12,
-                                        color: Colors.white
-                                    )
-                                ),
+                                        color: Colors.white.withOpacity(0.50))),
                               ]),
 
                               const SizedBox(height: 22),
@@ -609,7 +645,7 @@ class _LoginScreenHomeState extends State<LoginScreenHome>
                               // Google
                               SizedBox(width: double.infinity, height: 50,
                                 child: OutlinedButton(
-                                  onPressed: _googleLogin,
+                                  onPressed: _isLoading ? null : _googleLogin,
                                   style: OutlinedButton.styleFrom(
                                     backgroundColor:
                                     Colors.white.withOpacity(0.06),
@@ -620,7 +656,12 @@ class _LoginScreenHomeState extends State<LoginScreenHome>
                                         borderRadius:
                                         BorderRadius.circular(16)),
                                   ),
-                                  child: Row(
+                                  child: _isLoading
+                                      ? const SizedBox(width: 20, height: 20,
+                                      child: CircularProgressIndicator(
+                                          color: Colors.white,
+                                          strokeWidth: 2.0))
+                                      : Row(
                                       mainAxisAlignment:
                                       MainAxisAlignment.center,
                                       children: [
@@ -660,12 +701,16 @@ class _LoginScreenHomeState extends State<LoginScreenHome>
                                     onTap: () => Navigator.of(context).push(
                                         MaterialPageRoute(
                                             builder: (_) => SignUpScreen())),
-                                    child: const Text("Sign up",
+                                    child: ShaderMask(
+                                      shaderCallback: (b) =>
+                                          _grad.createShader(b),
+                                      child: const Text("Sign up",
                                           style: TextStyle(
                                               color: Colors.white,
                                               fontWeight: FontWeight.w800,
                                               fontSize: 13.5)),
                                     ),
+                                  ),
                                 ]),
                           ),
                           const SizedBox(height: 8),

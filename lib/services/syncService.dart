@@ -1,9 +1,11 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:developer' as developer;
 import 'dart:io';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:final_project/backend/databaseHelper.dart';
 import 'package:final_project/services/connectivityService.dart';
+import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:sqflite/sqflite.dart';
 
 // ─── Firestore Collection Names ───────────────────────────────────────────────
@@ -53,19 +55,59 @@ class SyncService {
   void dispose() => _connectivitySub?.cancel();
 
   // ══════════════════════════════════════════════════════════════════════════
-  //  IMAGE UPLOAD
+  //  IMAGE — Base64 encode (replaces Firebase Storage)
   // ══════════════════════════════════════════════════════════════════════════
 
-  /// Upload a local image file to Firebase Storage.
-  /// Returns the public download URL, or null if upload fails / offline.
+  /// Compress a local image file and encode it to a base64 data URI string.
+  /// The result can be stored directly in Firestore and SQLite as text.
+  ///
+  /// Compression targets ~200KB max to stay well under Firestore's 1MB limit.
+  /// Returns null if the file doesn't exist or encoding fails.
+  Future<String?> encodeImageToBase64(String localPath) async {
+    try {
+      final file = File(localPath);
+      if (!file.existsSync()) return null;
 
+      // Compress: resize to max 600px wide, quality 60
+      final compressed = await FlutterImageCompress.compressWithFile(
+        localPath,
+        minWidth:  600,
+        minHeight: 600,
+        quality:   60,
+        format:    CompressFormat.jpeg,
+      );
+
+      if (compressed == null) {
+        // Fallback: read raw and encode without compression
+        final bytes = await file.readAsBytes();
+        final b64   = base64Encode(bytes);
+        developer.log('Image encoded (uncompressed): ${bytes.length} bytes',
+            name: 'SyncService');
+        return 'data:image/jpeg;base64,$b64';
+      }
+
+      // Check size — Firestore doc limit is 1MB, warn if over 700KB
+      if (compressed.length > 700000) {
+        developer.log('Warning: encoded image is ${compressed.length} bytes '
+            '— consider a smaller photo', name: 'SyncService');
+      }
+
+      final b64 = base64Encode(compressed);
+      developer.log('Image encoded: ${compressed.length} bytes → '
+          '${b64.length} base64 chars', name: 'SyncService');
+      return 'data:image/jpeg;base64,$b64';
+    } catch (e) {
+      developer.log('Image encode failed: $e', name: 'SyncService');
+      return null;
+    }
+  }
 
   // ══════════════════════════════════════════════════════════════════════════
   //  POSTS — write
   // ══════════════════════════════════════════════════════════════════════════
 
-  /// Insert a new post. Call this instead of DatabaseHelper.insertPost().
-  /// Pass [imageLocalPath] to upload the image to Storage before saving.
+  /// Insert a new post.
+  /// Pass [imageLocalPath] to compress + base64-encode the image inline.
   /// Returns the local SQLite row id.
   Future<int> savePost({
     required int    userId,
@@ -79,8 +121,11 @@ class SyncService {
     String  urgencyLevel   = 'Low',
     String? imageLocalPath,
   }) async {
+    // Encode image locally — no network needed
     String? imageUrl;
-
+    if (imageLocalPath != null) {
+      imageUrl = await encodeImageToBase64(imageLocalPath);
+    }
     final localId = await _db.insertPost(
       userId: userId, title: title, description: description,
       postType: postType, category: category, status: status,
@@ -117,10 +162,13 @@ class SyncService {
     required String status,
     String  urgencyLevel     = 'Low',
     String? imageLocalPath,
-    String? existingImageUrl,
+    String? existingImageUrl,  // already-encoded base64 or null
   }) async {
+    // Re-encode only if a NEW local path was picked
     String? imageUrl = existingImageUrl;
-
+    if (imageLocalPath != null) {
+      imageUrl = await encodeImageToBase64(imageLocalPath);
+    }
     final result = await _db.updatePost(
       postId: postId, title: title, description: description,
       postType: postType, category: category, status: status,

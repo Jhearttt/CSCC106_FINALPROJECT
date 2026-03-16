@@ -346,16 +346,7 @@ class _DashboardHomeState extends State<DashboardHome> {
       Row(children: [
         Text("Recent Activity", style: headingLG),
         const Spacer(),
-        GestureDetector(
-          onTap: () => Navigator.push(context, MaterialPageRoute(
-              builder: (_) =>
-                  CommunityFeedScreen(localUserId: widget.localUserId))),
-          child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
-              decoration: BoxDecoration(gradient: kHeroGrad,
-                  borderRadius: BorderRadius.circular(20)),
-              child: Text("See all", style: buttonText.copyWith(fontSize: 11))),
-        ),
+
       ]),
       const SizedBox(height: 10),
       ..._recentPosts.map((p) => _recentPostTile(p)),
