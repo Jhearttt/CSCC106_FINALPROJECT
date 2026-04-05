@@ -1,5 +1,6 @@
 import 'dart:math';
 import 'package:awesome_dialog/awesome_dialog.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:final_project/backend/databaseHelper.dart';
 import 'package:final_project/frontend/loginScreen.dart';
 import 'package:flutter/material.dart';
@@ -19,7 +20,7 @@ const _grad = LinearGradient(
   begin: Alignment.topLeft, end: Alignment.bottomRight,
 );
 
-// ─── Animated signup background (different geometry from login) ───────────────
+// ─── Animated signup background ───────────────────────────────────────────────
 class _SignUpBgPainter extends CustomPainter {
   final double t;
   _SignUpBgPainter(this.t);
@@ -27,15 +28,12 @@ class _SignUpBgPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size s) {
     final W = s.width, H = s.height;
-
-    // ── Deep base (warmer tint than login) ──────────────────────────────────
     canvas.drawRect(Rect.fromLTWH(0, 0, W, H), Paint()
       ..shader = const LinearGradient(
         colors: [Color(0xFF200A3E), Color(0xFF1A1060), Color(0xFF0E1A3A)],
         begin: Alignment.topRight, end: Alignment.bottomLeft,
       ).createShader(Rect.fromLTWH(0, 0, W, H)));
 
-    // ── Orbs ────────────────────────────────────────────────────────────────
     void orb(double cx, double cy, double r, Color c, double op) {
       canvas.drawCircle(Offset(cx, cy), r, Paint()
         ..shader = RadialGradient(
@@ -53,10 +51,9 @@ class _SignUpBgPainter extends CustomPainter {
     orb(W * 0.0,  H * 0.90, W * 0.55 * p2, _kMint,0.28);
     orb(W * 0.5,  H * 0.85, W * 0.30 * p3, _kAmber.withOpacity(0.5), 0.14);
 
-    // ── Rotating diamond / square grid ──────────────────────────────────────
     canvas.save();
     canvas.translate(W * 0.5, H * 0.5);
-    canvas.rotate(t * 2 * pi * 0.04); // slow rotation
+    canvas.rotate(t * 2 * pi * 0.04);
     final gridPaint = Paint()
       ..color = _kV2.withOpacity(0.06)
       ..style = PaintingStyle.stroke
@@ -70,47 +67,7 @@ class _SignUpBgPainter extends CustomPainter {
       }
     canvas.restore();
 
-    // ── Triangle accent top-right ────────────────────────────────────────────
-    final triPaint = Paint()
-      ..color = _kV3.withOpacity(0.12)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.2;
-    final triPath = Path()
-      ..moveTo(W * 0.70, -10)
-      ..lineTo(W * 1.10, H * 0.22)
-      ..lineTo(W * 0.40, H * 0.18)
-      ..close();
-    canvas.drawPath(triPath, triPaint);
-    // inner
-    final triPath2 = Path()
-      ..moveTo(W * 0.78, H * 0.02)
-      ..lineTo(W * 1.00, H * 0.18)
-      ..lineTo(W * 0.56, H * 0.15)
-      ..close();
-    canvas.drawPath(triPath2,
-        triPaint..color = _kV2.withOpacity(0.08));
-
-    // ── Wave bands ────────────────────────────────────────────────────────────
-    for (int band = 0; band < 3; band++) {
-      final wavePath = Path();
-      final baseY = H * (0.30 + band * 0.12);
-      final amp   = 18.0 + band * 6;
-      final freq  = 2.5 + band * 0.5;
-      final phase = t * 2 * pi + band * pi / 3;
-      wavePath.moveTo(0, baseY);
-      for (double x = 0; x <= W; x += 2) {
-        final y = baseY + amp * sin(freq * pi * x / W + phase);
-        wavePath.lineTo(x, y);
-      }
-      canvas.drawPath(wavePath, Paint()
-        ..color = [_kV1, _kV2, _kMint][band].withOpacity(0.10 - band * 0.025)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.5 - band * 0.3);
-    }
-
-    // ── Deep animated sine wave bank (replaces flat scan line) ───────────────
     final deepWaves = [
-      // [baseY_frac, amp, freq, speed, strokeW, color, opacity]
       [0.58, 26.0, 2.0, 0.9,  30.0, _kV3,   0.20],
       [0.64, 18.0, 3.2, 1.5,  16.0, _kSky,  0.16],
       [0.70, 12.0, 4.5, 1.1,   9.0, _kAmber,0.13],
@@ -148,7 +105,6 @@ class _SignUpBgPainter extends CustomPainter {
         ..strokeCap = StrokeCap.round);
     }
 
-    // ── Sparkle / star field ──────────────────────────────────────────────────
     final sparkFill = Paint()..style = PaintingStyle.fill;
     final stars = [
       [0.08, 0.10, 3.5, _kAmber], [0.92, 0.16, 2.5, _kV2],
@@ -176,31 +132,6 @@ class _SignUpBgPainter extends CustomPainter {
       canvas.drawPath(path, sparkFill);
     }
 
-    // ── Hexagonal rings (large) ────────────────────────────────────────────────
-    for (final cfg in [
-      [0.18, 0.22, W * 0.22, _kV1, 0.10],
-      [0.82, 0.75, W * 0.18, _kV3, 0.10],
-    ]) {
-      final cx = W * (cfg[0] as double);
-      final cy = H * (cfg[1] as double);
-      final r  = cfg[2] as double;
-      final c  = cfg[3] as Color;
-      final op = cfg[4] as double;
-      final hexPath = Path();
-      for (int i = 0; i < 6; i++) {
-        final a = i * pi / 3 + t * 2 * pi * 0.06;
-        final x = cx + r * cos(a);
-        final y = cy + r * sin(a);
-        i == 0 ? hexPath.moveTo(x, y) : hexPath.lineTo(x, y);
-      }
-      hexPath.close();
-      canvas.drawPath(hexPath, Paint()
-        ..color = c.withOpacity(op)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.2);
-    }
-
-    // ── Particle dot mesh ─────────────────────────────────────────────────────
     final pDot = Paint()..color = _kV2.withOpacity(0.08);
     for (double x = 18; x < W; x += 22)
       for (double y = 18; y < H; y += 22) {
@@ -208,18 +139,6 @@ class _SignUpBgPainter extends CustomPainter {
         pDot.color = _kV2.withOpacity(0.04 + 0.10 * b);
         canvas.drawCircle(Offset(x, y), 0.9, pDot);
       }
-
-    // ── Corner glows ──────────────────────────────────────────────────────────
-    canvas.drawArc(Rect.fromCircle(center: Offset(W, H), radius: W * 0.42),
-        pi, pi / 2, false, Paint()
-          ..color = _kMint.withOpacity(0.15)
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 1.2);
-    canvas.drawArc(Rect.fromCircle(center: Offset(0, 0), radius: W * 0.38),
-        0, pi / 2, false, Paint()
-          ..color = _kV1.withOpacity(0.15)
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 1.2);
   }
 
   @override
@@ -297,29 +216,63 @@ class _SignUpScreenHomeState extends State<SignUpScreenHome>
     if (_passCtrl.text != _confirmCtrl.text) { _err("Passwords do not match"); return; }
 
     setState(() => _isLoading = true);
+
+    // Insert into local database
     final result = await DatabaseHelper().insertUser(
-      fullName: _nameCtrl.text.trim(), userName: _userCtrl.text.trim(),
-      password: _passCtrl.text, email: email.isNotEmpty ? email : null,
+      fullName: _nameCtrl.text.trim(),
+      userName: _userCtrl.text.trim(),
+      password: _passCtrl.text,
+      email: email.isNotEmpty ? email : null,
     );
-    setState(() => _isLoading = false);
 
     if (result > 0) {
-      // ── Sync new user to Firestore immediately ──
-      await DatabaseHelper().syncLocalUserToFirestore(result);
+      // CRITICAL: Create Firestore document for local user
+      try {
+        final firestore = FirebaseFirestore.instance;
+        final localDocId = 'local_$result';
 
-      AwesomeDialog(
-        width: 300,
-        context: context,
-        title: "You're in! 🎉",
-        desc: "Account created. Welcome to CampusAid!",
-        dialogType: DialogType.success,
-        btnOkColor: _kV1,
-        btnOkOnPress: () => Navigator.of(context).pushReplacement(
-            MaterialPageRoute(builder: (_) => const LoginScreen())),
-      ).show();
-    }else {
+        // Get the email - use provided email or create one from username
+        final userEmail = email.isNotEmpty ? email : '${_userCtrl.text.trim()}@local.user';
+
+        // Create the document in Firestore
+        await firestore.collection('users').doc(localDocId).set({
+          'displayName': _nameCtrl.text.trim(),
+          'userName': _userCtrl.text.trim(),
+          'email': userEmail,
+          'localId': result,
+          'uid': null,
+          'isLocalUser': true,
+          'photoUrl': '',
+          'createdAt': FieldValue.serverTimestamp(),
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+
+        print('✅ Firestore user created: $localDocId with email: $userEmail');
+
+        // Show success dialog
+        if (mounted) {
+          AwesomeDialog(
+            width: 300,
+            context: context,
+            title: "You're in! 🎉",
+            desc: "Account created successfully! You can now log in and chat with other users.",
+            dialogType: DialogType.success,
+            btnOkColor: _kV1,
+            btnOkOnPress: () => Navigator.of(context).pushReplacement(
+                MaterialPageRoute(builder: (_) => const LoginScreen())),
+          ).show();
+        }
+      } catch (e) {
+        print('❌ Error creating Firestore document: $e');
+        if (mounted) {
+          _err("Account created but there was a sync issue. Please contact support.");
+        }
+      }
+    } else {
       _err("Username already taken. Please try another.");
     }
+
+    setState(() => _isLoading = false);
   }
 
   void _err(String msg) {
@@ -336,11 +289,8 @@ class _SignUpScreenHomeState extends State<SignUpScreenHome>
       body: AnimatedBuilder(
         animation: _bgCtrl,
         builder: (_, __) => Stack(children: [
-
           CustomPaint(painter: _SignUpBgPainter(_bgCtrl.value),
               child: const SizedBox.expand()),
-
-          // Frosted panel behind form
           Positioned(
             bottom: 0, left: 0, right: 0,
             height: screenH * 0.72,
@@ -357,7 +307,6 @@ class _SignUpScreenHomeState extends State<SignUpScreenHome>
               ),
             ),
           ),
-
           SafeArea(
             child: FadeTransition(
               opacity: _fadeAnim,
@@ -366,10 +315,7 @@ class _SignUpScreenHomeState extends State<SignUpScreenHome>
                 child: SingleChildScrollView(
                   padding: const EdgeInsets.symmetric(horizontal: 26),
                   child: Column(children: [
-
                     const SizedBox(height: 16),
-
-                    // Back button
                     Align(alignment: Alignment.centerLeft,
                       child: GestureDetector(
                         onTap: () => Navigator.of(context).pop(),
@@ -386,10 +332,7 @@ class _SignUpScreenHomeState extends State<SignUpScreenHome>
                                 color: Colors.white.withOpacity(0.80), size: 17)),
                       ),
                     ),
-
                     const SizedBox(height: 22),
-
-                    // Brand header
                     Container(
                       width: 78, height: 78,
                       decoration: BoxDecoration(
@@ -407,10 +350,7 @@ class _SignUpScreenHomeState extends State<SignUpScreenHome>
                       child: const Icon(Icons.school_rounded,
                           color: Colors.white, size: 34),
                     ),
-
                     const SizedBox(height: 14),
-
-                    // ── App name ──
                     Text(
                       "CampusAid",
                       style: TextStyle(
@@ -432,10 +372,7 @@ class _SignUpScreenHomeState extends State<SignUpScreenHome>
                         style: TextStyle(fontSize: 13,
                             color: Colors.white.withOpacity(0.45),
                             fontWeight: FontWeight.w400)),
-
                     const SizedBox(height: 24),
-
-                    // Form card
                     Container(
                       decoration: BoxDecoration(
                         color: Colors.white.withOpacity(0.09),
@@ -451,11 +388,9 @@ class _SignUpScreenHomeState extends State<SignUpScreenHome>
                       ),
                       padding: const EdgeInsets.all(22),
                       child: Column(children: [
-
                         _sectionHead(Icons.person_rounded,
                             "Personal Info", _kV1, _kV3),
                         const SizedBox(height: 16),
-
                         _field(ctrl: _nameCtrl, focus: _nameFocus,
                             label: "Full Name", hint: "e.g. Maria Santos",
                             icon: Icons.badge_rounded),
@@ -469,13 +404,10 @@ class _SignUpScreenHomeState extends State<SignUpScreenHome>
                             hint: "e.g. maria@school.edu",
                             icon: Icons.email_outlined,
                             keyboard: TextInputType.emailAddress),
-
                         const SizedBox(height: 22),
-
                         _sectionHead(Icons.lock_rounded,
                             "Security", _kV3, _kV1),
                         const SizedBox(height: 16),
-
                         _field(ctrl: _passCtrl, focus: _passFocus,
                             label: "Password",
                             hint: "Create a strong password",
@@ -509,10 +441,7 @@ class _SignUpScreenHomeState extends State<SignUpScreenHome>
                                         size: 20)))),
                       ]),
                     ),
-
                     const SizedBox(height: 24),
-
-                    // Create button
                     SizedBox(width: double.infinity, height: 56,
                       child: DecoratedBox(
                         decoration: BoxDecoration(
@@ -550,9 +479,7 @@ class _SignUpScreenHomeState extends State<SignUpScreenHome>
                         ),
                       ),
                     ),
-
                     const SizedBox(height: 22),
-
                     Container(
                       padding: const EdgeInsets.symmetric(vertical: 14),
                       decoration: BoxDecoration(
@@ -569,10 +496,9 @@ class _SignUpScreenHomeState extends State<SignUpScreenHome>
                                   MaterialPageRoute(
                                       builder: (_) => const LoginScreen())),
                               child: const Text("Sign in",
-                                    style: TextStyle(color: Colors.white,
-                                        fontWeight: FontWeight.w800, fontSize: 13.5)),
-                              ),
-
+                                  style: TextStyle(color: Colors.white,
+                                      fontWeight: FontWeight.w800, fontSize: 13.5)),
+                            ),
                           ]),
                     ),
                     const SizedBox(height: 6),

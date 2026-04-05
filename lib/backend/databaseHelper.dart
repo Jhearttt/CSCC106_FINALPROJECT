@@ -7,25 +7,42 @@ class DatabaseHelper {
   static const _dbVersion = 5; // v5 → isAccepted on comments
 
   // Add this method to DatabaseHelper class
-  Future<void> syncLocalUserToFirestore(int localUserId) async {
-    final user = await getUserById(localUserId);
-    if (user == null) return;
+  // Add this method to your DatabaseHelper class
+  // In databaseHelper.dart, replace the syncLocalUserToFirestore method with this:
 
-    // Use localUserId as the Firestore doc ID for local users
-    final docId = 'local_$localUserId';
+  Future<void> syncLocalUserToFirestore(int localId) async {
+    try {
+      final user = await getUserById(localId);
+      if (user != null) {
+        final firestore = FirebaseFirestore.instance;
 
-    await FirebaseFirestore.instance
-        .collection('users')
-        .doc(docId)
-        .set({
-      'displayName': user['fullName'] ?? user['userName'] ?? 'User',
-      'email':       user['email'] ?? '',
-      'photoUrl':    user['profilePic'] ?? '',
-      'uid':         docId,
-      'localId':     localUserId,
-      'isLocalUser': true,
-      'updatedAt':   FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
+        // Get email - ensure it's not null
+        String email = user['email'] ?? '';
+        if (email.isEmpty) {
+          email = '${user['userName']}@local.user';
+        }
+
+        // Get display name
+        String displayName = user['fullName'] ?? user['userName'] ?? 'User';
+
+        // Create document with local_ prefix (primary document)
+        await firestore.collection('users').doc('local_$localId').set({
+          'displayName': displayName,
+          'email': email,
+          'userName': user['userName'] ?? '',
+          'localId': localId,
+          'uid': null,
+          'isLocalUser': true,
+          'photoUrl': user['profilePic'] ?? '',
+          'createdAt': FieldValue.serverTimestamp(),
+          'updatedAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
+
+        print('✅ Synced local user $localId to Firestore with email: $email');
+      }
+    } catch (e) {
+      print('❌ Error syncing local user to Firestore: $e');
+    }
   }
 
   Database? _db;

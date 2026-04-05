@@ -235,20 +235,19 @@ class _ChatListScreenState extends State<ChatListScreen> {
 
         var docs = snapshot.data!.docs;
 
-        // ── KEY FIX: only show rooms with actual messages ──────────────────
+        // Filter out conversations with no messages
         docs = docs.where((doc) {
-          final data        = doc.data() as Map<String, dynamic>;
+          final data = doc.data() as Map<String, dynamic>;
           final lastMessage = (data['lastMessage'] ?? '').toString().trim();
           return lastMessage.isNotEmpty;
         }).toList();
 
-        // Sort by lastMessageAt descending
+        // Sort by lastMessageTime descending
         docs.sort((a, b) {
           final aData = a.data() as Map<String, dynamic>;
           final bData = b.data() as Map<String, dynamic>;
-          // Support both field names for compatibility
-          final aTime = (aData['lastMessageAt'] ?? aData['lastMessageTime']) as Timestamp?;
-          final bTime = (bData['lastMessageAt'] ?? bData['lastMessageTime']) as Timestamp?;
+          final aTime = aData['lastMessageTime'] as Timestamp?;
+          final bTime = bData['lastMessageTime'] as Timestamp?;
           if (aTime == null && bTime == null) return 0;
           if (aTime == null) return 1;
           if (bTime == null) return -1;
@@ -258,8 +257,8 @@ class _ChatListScreenState extends State<ChatListScreen> {
         // Search filter
         if (_searchQuery.isNotEmpty) {
           docs = docs.where((doc) {
-            final data    = doc.data() as Map<String, dynamic>;
-            final name    = _getOtherPersonName(data).toLowerCase();
+            final data = doc.data() as Map<String, dynamic>;
+            final name = _getOtherPersonName(data).toLowerCase();
             final lastMsg = (data['lastMessage'] ?? '').toLowerCase();
             return name.contains(_searchQuery) ||
                 lastMsg.contains(_searchQuery);
@@ -276,26 +275,23 @@ class _ChatListScreenState extends State<ChatListScreen> {
           separatorBuilder: (_, __) =>
               Divider(height: 1, indent: 80, color: Colors.grey.shade100),
           itemBuilder: (context, i) {
-            final data        = docs[i].data() as Map<String, dynamic>;
-            final convoId     = docs[i].id;
-            final otherName   = _getOtherPersonName(data);
+            final data = docs[i].data() as Map<String, dynamic>;
+            final convoId = docs[i].id;
+            final otherName = _getOtherPersonName(data);
             final otherUserId = _getOtherPersonId(data);
             final lastMessage = data['lastMessage'] ?? '';
-
-            // Support both timestamp field names
-            final lastTime =
-            (data['lastMessageAt'] ?? data['lastMessageTime']) as Timestamp?;
+            final lastTime = data['lastMessageTime'] as Timestamp?;
 
             return _ConversationTile(
-              key:             ValueKey(convoId),
-              conversationId:  convoId,
+              key: ValueKey(convoId),
+              conversationId: convoId,
               otherPersonName: otherName,
-              otherPersonId:   otherUserId,
-              lastMessage:     lastMessage,
-              timeLabel:       _formatTime(lastTime),
-              currentUserId:   widget.currentUserId,
+              otherPersonId: otherUserId,
+              lastMessage: lastMessage,
+              timeLabel: _formatTime(lastTime),
+              currentUserId: widget.currentUserId,
               currentUserName: widget.currentUserName,
-              onDelete:        () => _confirmDelete(convoId),
+              onDelete: () => _confirmDelete(convoId),
             );
           },
         );

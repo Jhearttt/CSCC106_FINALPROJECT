@@ -4,44 +4,51 @@ import 'package:flutter/cupertino.dart';
 class ChatService {
   final _db = FirebaseFirestore.instance;
 
-  /// Normalize user ID to consistent format for conversations
-  String _normalizeParticipantId(String userId) {
-    // If it's already local_X format, keep it
+  /// Get the canonical ID for any user (converts to consistent format)
+  Future<String> getCanonicalId(String userId) async {
+    // If already in local_ format, return as is
     if (userId.startsWith('local_')) {
       return userId;
     }
 
-    // If it's a numeric string, convert to local_ format
-    if (RegExp(r'^\d+$').hasMatch(userId)) {
-      return 'local_$userId';
+    // If it's a Firebase UID, check if there's a local account linked
+    try {
+      final userDoc = await _db.collection('users').doc(userId).get();
+      if (userDoc.exists) {
+        final data = userDoc.data();
+        final localId = data?['localId'];
+        if (localId != null) {
+          return 'local_$localId';
+        }
+      }
+    } catch (e) {
+      debugPrint('Error getting canonical ID for $userId: $e');
     }
 
-    // Otherwise keep as is (Firebase UID)
+    // Return original if no local mapping found
     return userId;
   }
 
-  /// Check if two user IDs represent the same person
-  bool _isSamePerson(String idA, String idB) {
-    if (idA == idB) return true;
-
-    // Extract numeric IDs if present
-    final aNum = idA.startsWith('local_') ? idA.replaceFirst('local_', '') : null;
-    final bNum = idB.startsWith('local_') ? idB.replaceFirst('local_', '') : null;
-
-    if (aNum != null && bNum != null) return aNum == bNum;
-
-    return false;
+  /// Normalize participant IDs for consistent storage
+  Future<List<String>> normalizeParticipants(List<String> participants) async {
+    List<String> normalized = [];
+    for (final participant in participants) {
+      normalized.add(await getCanonicalId(participant));
+    }
+    return normalized;
   }
 
-  Stream<QuerySnapshot> getConversations(String currentUserId) {
-    print('🔍 Getting conversations for user: $currentUserId');
+  Stream<QuerySnapshot> getConversations(String currentUserId) async* {
+    // First, get the canonical ID for the current user
+    final canonicalId = await getCanonicalId(currentUserId);
+    debugPrint('🔍 Getting conversations for user: $canonicalId (original: $currentUserId)');
 
-    return _db
+    yield* _db
         .collection('conversations')
-        .where('participants', arrayContains: currentUserId)
+        .where('participants', arrayContains: canonicalId)
         .snapshots(includeMetadataChanges: true)
         .handleError((error) {
-      print('❌ Error getting conversations: $error');
+      debugPrint('❌ Error getting conversations: $error');
       return Stream.error(error);
     });
   }
@@ -52,36 +59,40 @@ class ChatService {
     required String otherUserId,
     required String otherUserName,
   }) async {
-    // Normalize both IDs
-    final normalizedCurrentId = _normalizeParticipantId(currentUserId);
-    final normalizedOtherId = _normalizeParticipantId(otherUserId);
+    // Get canonical IDs for both users
+    final canonicalCurrentId = await getCanonicalId(currentUserId);
+    final canonicalOtherId = await getCanonicalId(otherUserId);
 
-    print('🔍 Creating/finding conversation between $normalizedCurrentId and $normalizedOtherId');
+    debugPrint('🔍 Creating/finding conversation between:');
+    debugPrint('   Current: $canonicalCurrentId (original: $currentUserId)');
+    debugPrint('   Other: $canonicalOtherId (original: $otherUserId)');
 
-    // First, try to find existing conversation
+    // First, try to find existing conversation using canonical IDs
     final existingConversations = await _db
         .collection('conversations')
-        .where('participants', arrayContains: normalizedCurrentId)
+        .where('participants', arrayContains: canonicalCurrentId)
         .get();
 
     for (final doc in existingConversations.docs) {
       final participants = List<String>.from(doc['participants']);
+      debugPrint('   Checking conversation ${doc.id}: participants = $participants');
 
-      // Check if other user is in participants
+      // Check if other user is in participants (using canonical comparison)
       for (final participant in participants) {
-        if (_isSamePerson(participant, normalizedOtherId)) {
-          print('✅ Found existing conversation: ${doc.id}');
+        final participantCanonical = await getCanonicalId(participant);
+        if (participantCanonical == canonicalOtherId) {
+          debugPrint('✅ Found existing conversation: ${doc.id}');
           return doc.id;
         }
       }
     }
 
-    // Create new conversation
-    print('🆕 Creating new conversation');
-    final participants = [normalizedCurrentId, normalizedOtherId];
+    // Create new conversation with canonical IDs
+    debugPrint('🆕 Creating new conversation');
+    final participants = [canonicalCurrentId, canonicalOtherId];
     final participantNames = {
-      normalizedCurrentId: currentUserName,
-      normalizedOtherId: otherUserName,
+      canonicalCurrentId: currentUserName,
+      canonicalOtherId: otherUserName,
     };
 
     final docRef = await _db.collection('conversations').add({
@@ -92,7 +103,7 @@ class ChatService {
       'createdAt': FieldValue.serverTimestamp(),
     });
 
-    print('✅ Created conversation: ${docRef.id}');
+    debugPrint('✅ Created conversation: ${docRef.id}');
     return docRef.id;
   }
 
@@ -102,7 +113,9 @@ class ChatService {
     required String senderName,
     required String text,
   }) async {
-    print('📤 Sending message from $senderId in conversation $conversationId');
+    // Get canonical sender ID
+    final canonicalSenderId = await getCanonicalId(senderId);
+    debugPrint('📤 Sending message from $canonicalSenderId in conversation $conversationId');
 
     final batch = _db.batch();
     final convoRef = _db.collection('conversations').doc(conversationId);
@@ -110,7 +123,7 @@ class ChatService {
     // Add message
     final msgRef = convoRef.collection('messages').doc();
     batch.set(msgRef, {
-      'senderId': senderId,
+      'senderId': canonicalSenderId,
       'senderName': senderName,
       'text': text,
       'createdAt': FieldValue.serverTimestamp(),
@@ -123,7 +136,7 @@ class ChatService {
     });
 
     await batch.commit();
-    print('✅ Message sent successfully');
+    debugPrint('✅ Message sent successfully');
 
     // Notify recipient
     try {
@@ -134,17 +147,17 @@ class ChatService {
       // Find recipient (the one who isn't the sender)
       String? recipientId;
       for (final participant in participants) {
-        if (!_isSamePerson(participant, senderId)) {
+        if (participant != canonicalSenderId) {
           recipientId = participant;
           break;
         }
       }
 
       if (recipientId != null && recipientId.isNotEmpty) {
-        print('🔔 Creating notification for recipient: $recipientId');
+        debugPrint('🔔 Creating notification for recipient: $recipientId');
         await _db.collection('notifications').add({
           'userId': recipientId,
-          'fromUserId': senderId,
+          'fromUserId': canonicalSenderId,
           'fromName': senderName,
           'type': 'chat',
           'title': senderName,
@@ -155,7 +168,7 @@ class ChatService {
         });
       }
     } catch (e) {
-      print('❌ Chat notification failed: $e');
+      debugPrint('❌ Chat notification failed: $e');
     }
   }
 
@@ -169,7 +182,7 @@ class ChatService {
   }
 
   Future<void> deleteConversation(String conversationId) async {
-    print('🗑️ Deleting conversation: $conversationId');
+    debugPrint('🗑️ Deleting conversation: $conversationId');
 
     // Also delete all messages in the conversation
     final messagesRef = _db
@@ -187,6 +200,6 @@ class ChatService {
     batch.delete(_db.collection('conversations').doc(conversationId));
     await batch.commit();
 
-    print('✅ Conversation deleted');
+    debugPrint('✅ Conversation deleted');
   }
 }

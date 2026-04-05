@@ -59,8 +59,10 @@ class _UserListScreenState extends State<UserListScreen> {
         if (localId != null) {
           final localUser = await DatabaseHelper().getUserById(localId);
           _currentUserEmail = localUser?['email'];
+          print('📱 Current local user: email=$_currentUserEmail, canonicalId=$_currentUserCanonicalId');
         }
       } else {
+        // This is a Google user
         final doc = await FirebaseFirestore.instance
             .collection('users')
             .doc(widget.currentUserId)
@@ -74,15 +76,7 @@ class _UserListScreenState extends State<UserListScreen> {
           } else {
             _currentUserCanonicalId = widget.currentUserId;
           }
-        }
-      }
-
-      // If still no email, try to get from local DB
-      if (_currentUserEmail == null && widget.currentUserId.startsWith('local_')) {
-        final localId = int.tryParse(widget.currentUserId.replaceFirst('local_', ''));
-        if (localId != null) {
-          final localUser = await DatabaseHelper().getUserById(localId);
-          _currentUserEmail = localUser?['email'];
+          print('📱 Current Google user: email=$_currentUserEmail, canonicalId=$_currentUserCanonicalId');
         }
       }
     } catch (e) {
@@ -98,6 +92,8 @@ class _UserListScreenState extends State<UserListScreen> {
           .collection('users')
           .get();
 
+      print('📱 Total users in Firestore: ${usersSnapshot.docs.length}');
+
       // Use Map to deduplicate by email (most reliable)
       final Map<String, Map<String, dynamic>> userMap = {};
 
@@ -106,23 +102,31 @@ class _UserListScreenState extends State<UserListScreen> {
         final email = data['email'] as String?;
         final localId = data['localId'];
 
-        // Skip if no email (shouldn't happen)
-        if (email == null || email.isEmpty) continue;
+        print('📱 User: email=$email, localId=$localId, docId=${doc.id}');
+
+        // Skip if no email
+        if (email == null || email.isEmpty) {
+          print('⚠️ Skipping user with no email: ${doc.id}');
+          continue;
+        }
 
         // Skip current user
-        if (email == _currentUserEmail) continue;
+        if (email == _currentUserEmail) {
+          print('⚠️ Skipping current user: $email');
+          continue;
+        }
 
         // Use email as the unique key
         if (!userMap.containsKey(email)) {
           // Get the best name available
           String name = data['displayName'] ?? '';
           if (name.isEmpty) {
-            name = email.split('@')[0];
+            name = data['userName'] ?? email.split('@')[0];
           }
 
           // Create canonical ID
           String canonicalId;
-          if (localId != null) {
+          if (localId != null && localId is int) {
             canonicalId = 'local_$localId';
           } else {
             canonicalId = doc.id;
@@ -134,28 +138,19 @@ class _UserListScreenState extends State<UserListScreen> {
             'canonicalId': canonicalId,
             'name': name,
             'email': email,
-            'photoUrl': data['photoUrl'],
+            'photoUrl': data['photoUrl'] ?? '',
             'localId': localId,
           };
-        } else {
-          // If user already exists, prefer the one with localId
-          final existingUser = userMap[email]!;
-          if (localId != null && existingUser['localId'] == null) {
-            userMap[email] = {
-              'id': doc.id,
-              'canonicalId': 'local_$localId',
-              'name': existingUser['name'],
-              'email': email,
-              'photoUrl': data['photoUrl'],
-              'localId': localId,
-            };
-          }
+
+          print('✅ Added user: $name ($email) with canonicalId: $canonicalId');
         }
       }
 
       // Convert map to list and sort by name
       List<Map<String, dynamic>> userList = userMap.values.toList();
       userList.sort((a, b) => a['name'].toLowerCase().compareTo(b['name'].toLowerCase()));
+
+      print('📱 Final unique users count: ${userList.length}');
 
       if (mounted) {
         setState(() {
@@ -164,7 +159,7 @@ class _UserListScreenState extends State<UserListScreen> {
         });
       }
     } catch (e) {
-      debugPrint('Error loading users: $e');
+      print('❌ Error loading users: $e');
       if (mounted) {
         setState(() => _isLoading = false);
       }
@@ -263,20 +258,12 @@ class _UserListScreenState extends State<UserListScreen> {
 
   Widget _buildUserList() {
     if (_isLoading) {
-      return const Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            CircularProgressIndicator(color: _kAccent),
-            SizedBox(height: 16),
-            Text('Loading users...', style: TextStyle(color: Colors.grey)),
-          ],
-        ),
-      );
+      return const Center(child: CircularProgressIndicator());
     }
 
-    // Filter based on search query
+    // Filter users based on search query
     List<Map<String, dynamic>> filteredUsers = _uniqueUsers;
+
     if (_searchQuery.isNotEmpty) {
       filteredUsers = _uniqueUsers.where((user) {
         final name = user['name'].toLowerCase();
@@ -286,35 +273,7 @@ class _UserListScreenState extends State<UserListScreen> {
     }
 
     if (filteredUsers.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 72,
-              height: 72,
-              decoration: BoxDecoration(
-                color: _kAccent.withOpacity(0.08),
-                shape: BoxShape.circle,
-              ),
-              child: const Icon(Icons.people_outline_rounded, size: 32, color: _kAccent),
-            ),
-            const SizedBox(height: 14),
-            Text(
-              _searchQuery.isNotEmpty
-                  ? 'No users found for "$_searchQuery"'
-                  : 'No other users registered yet',
-              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: _kInk),
-            ),
-            const SizedBox(height: 6),
-            const Text(
-              'Users will appear here once they register',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: Colors.grey, fontSize: 13),
-            ),
-          ],
-        ),
-      );
+      return _buildEmptyState();
     }
 
     return RefreshIndicator(
@@ -333,6 +292,39 @@ class _UserListScreenState extends State<UserListScreen> {
             onTap: () => _openChat(user['canonicalId'], user['name']),
           );
         },
+      ),
+    );
+  }
+
+  // ADD THIS MISSING METHOD
+  Widget _buildEmptyState() {
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 72,
+            height: 72,
+            decoration: BoxDecoration(
+              color: _kAccent.withOpacity(0.08),
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(Icons.people_outline_rounded, size: 32, color: _kAccent),
+          ),
+          const SizedBox(height: 14),
+          Text(
+            _searchQuery.isNotEmpty
+                ? 'No users found for "$_searchQuery"'
+                : 'No other users registered yet',
+            style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: _kInk),
+          ),
+          const SizedBox(height: 6),
+          const Text(
+            'Users will appear here once they register',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Colors.grey, fontSize: 13),
+          ),
+        ],
       ),
     );
   }

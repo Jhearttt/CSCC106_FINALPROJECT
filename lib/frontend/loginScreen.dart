@@ -281,8 +281,8 @@ class _LoginScreenHomeState extends State<LoginScreenHome>
   bool _hidePass  = true;
   bool _isLoading = false;
 
-  late AnimationController _bgCtrl;   // continuous bg animation
-  late AnimationController _inCtrl;   // entrance animation
+  late AnimationController _bgCtrl;
+  late AnimationController _inCtrl;
   late Animation<double>   _fadeAnim;
   late Animation<Offset>   _slideAnim;
 
@@ -290,7 +290,6 @@ class _LoginScreenHomeState extends State<LoginScreenHome>
   void initState() {
     super.initState();
 
-    // your existing initState code below stays exactly the same:
     _bgCtrl = AnimationController(vsync: this,
         duration: const Duration(seconds: 8))..repeat();
     _inCtrl = AnimationController(vsync: this,
@@ -302,7 +301,6 @@ class _LoginScreenHomeState extends State<LoginScreenHome>
     _passFocus.addListener(() => setState(() {}));
     _inCtrl.forward();
   }
-
 
   @override
   void dispose() {
@@ -327,8 +325,10 @@ class _LoginScreenHomeState extends State<LoginScreenHome>
       // ── Sync local user to Firestore so they appear in chat user list ──
       await DatabaseHelper().syncLocalUserToFirestore(user['id'] as int);
 
-      Navigator.of(context).pushReplacement(MaterialPageRoute(
-          builder: (_) => Homepage(localUserId: user['id'])));
+      if (mounted) {
+        Navigator.of(context).pushReplacement(MaterialPageRoute(
+            builder: (_) => Homepage(localUserId: user['id'])));
+      }
     }
   }
 
@@ -338,36 +338,50 @@ class _LoginScreenHomeState extends State<LoginScreenHome>
       final user = await AuthService().signInWithGoogle();
       if (user != null && mounted) {
         developer.log('Google: ${user.email}', name: 'Login');
-        final db  = DatabaseHelper();
+        final db = DatabaseHelper();
         final all = await db.getAllUsers();
-        final ex  = all.firstWhere(
+        final ex = all.firstWhere(
                 (u) => u['email'] == user.email, orElse: () => {});
         final localId = ex.isNotEmpty
             ? ex['id'] as int
             : await db.insertUser(
-            fullName:   user.displayName ?? 'Google User',
-            userName:   user.email?.split('@')[0] ??
+            fullName: user.displayName ?? 'Google User',
+            userName: user.email?.split('@')[0] ??
                 'user_${DateTime.now().millisecondsSinceEpoch}',
-            password:   '',
-            email:      user.email,
+            password: '',
+            email: user.email,
             profilePic: user.photoURL);
 
-        // ── Sync to Firestore — best effort, never block login ──
+        // ── CRITICAL FIX: Create proper Firestore documents for Google user ──
         try {
-          await FirebaseFirestore.instance
-              .collection('users')
-              .doc(user.uid)
-              .set({
+          final firestore = FirebaseFirestore.instance;
+
+          // Create document with Firebase UID (for Google sign-in)
+          await firestore.collection('users').doc(user.uid).set({
             'displayName': user.displayName ?? user.email?.split('@')[0] ?? 'User',
-            'email':       user.email ?? '',
-            'photoUrl':    user.photoURL ?? '',
-            'uid':         user.uid,
+            'email': user.email ?? '',
+            'photoUrl': user.photoURL ?? '',
+            'uid': user.uid,
+            'localId': localId,
             'isLocalUser': false,
-            'updatedAt':   FieldValue.serverTimestamp(),
+            'createdAt': FieldValue.serverTimestamp(),
+            'updatedAt': FieldValue.serverTimestamp(),
           }, SetOptions(merge: true));
-          await db.syncLocalUserToFirestore(localId);
+
+          // Create document with local_ prefix (for consistency with local users)
+          await firestore.collection('users').doc('local_$localId').set({
+            'displayName': user.displayName ?? user.email?.split('@')[0] ?? 'User',
+            'email': user.email ?? '',
+            'photoUrl': user.photoURL ?? '',
+            'uid': user.uid,
+            'localId': localId,
+            'isLocalUser': false,
+            'createdAt': FieldValue.serverTimestamp(),
+            'updatedAt': FieldValue.serverTimestamp(),
+          }, SetOptions(merge: true));
+
+          developer.log('Firestore sync successful for Google user', name: 'Login');
         } catch (syncError) {
-          // Sync failed — log it but don't block login
           developer.log('Firestore sync failed: $syncError', name: 'Login');
         }
 
@@ -377,7 +391,6 @@ class _LoginScreenHomeState extends State<LoginScreenHome>
                   builder: (_) => Homepage(localUserId: localId)));
         }
       } else {
-        // User cancelled the Google sign-in flow
         if (mounted) setState(() => _isLoading = false);
       }
     } on FirebaseAuthException catch (e) {
@@ -406,7 +419,6 @@ class _LoginScreenHomeState extends State<LoginScreenHome>
     } catch (e) {
       if (!mounted) return;
       setState(() => _isLoading = false);
-      // User likely cancelled the Google picker — don't show an error
       if (e.toString().contains('sign_in_canceled') ||
           e.toString().contains('canceled') ||
           e.toString().contains('PlatformException')) return;
