@@ -304,13 +304,20 @@ class _SignUpScreenHomeState extends State<SignUpScreenHome>
     setState(() => _isLoading = false);
 
     if (result > 0) {
-      AwesomeDialog(width: 300, context: context,
-          title: "You're in! 🎉",
-          desc: "Account created. Welcome to CampusAid!",
-          dialogType: DialogType.success, btnOkColor: _kV1,
-          btnOkOnPress: () => Navigator.of(context).pushReplacement(
-              MaterialPageRoute(builder: (_) => const LoginScreen()))).show();
-    } else {
+      // ── Sync new user to Firestore immediately ──
+      await DatabaseHelper().syncLocalUserToFirestore(result);
+
+      AwesomeDialog(
+        width: 300,
+        context: context,
+        title: "You're in! 🎉",
+        desc: "Account created. Welcome to CampusAid!",
+        dialogType: DialogType.success,
+        btnOkColor: _kV1,
+        btnOkOnPress: () => Navigator.of(context).pushReplacement(
+            MaterialPageRoute(builder: (_) => const LoginScreen())),
+      ).show();
+    }else {
       _err("Username already taken. Please try another.");
     }
   }

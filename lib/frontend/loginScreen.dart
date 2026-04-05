@@ -1,12 +1,14 @@
 import 'dart:developer' as developer;
 import 'dart:math';
 import 'package:awesome_dialog/awesome_dialog.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:final_project/backend/databaseHelper.dart';
 import 'package:final_project/frontend/homePage.dart';
 import 'package:final_project/frontend/signUpScreen.dart';
 import 'package:final_project/GoogleServices/auth_service.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+
 
 // ─── Palette ──────────────────────────────────────────────────────────────────
 const _kV1 = Color(0xFF7B6CF6);
@@ -287,6 +289,8 @@ class _LoginScreenHomeState extends State<LoginScreenHome>
   @override
   void initState() {
     super.initState();
+
+    // your existing initState code below stays exactly the same:
     _bgCtrl = AnimationController(vsync: this,
         duration: const Duration(seconds: 8))..repeat();
     _inCtrl = AnimationController(vsync: this,
@@ -298,6 +302,7 @@ class _LoginScreenHomeState extends State<LoginScreenHome>
     _passFocus.addListener(() => setState(() {}));
     _inCtrl.forward();
   }
+
 
   @override
   void dispose() {
@@ -311,12 +316,17 @@ class _LoginScreenHomeState extends State<LoginScreenHome>
     if (_userCtrl.text.trim().isEmpty) { _err("Please enter your username."); return; }
     if (_passCtrl.text.trim().isEmpty) { _err("Please enter your password."); return; }
     setState(() => _isLoading = true);
+
     final user = await DatabaseHelper()
         .loginUser(_userCtrl.text.trim(), _passCtrl.text.trim());
     setState(() => _isLoading = false);
+
     if (user == null) {
       _err("Invalid username or password.");
     } else if (mounted) {
+      // ── Sync local user to Firestore so they appear in chat user list ──
+      await DatabaseHelper().syncLocalUserToFirestore(user['id'] as int);
+
       Navigator.of(context).pushReplacement(MaterialPageRoute(
           builder: (_) => Homepage(localUserId: user['id'])));
     }
@@ -341,6 +351,26 @@ class _LoginScreenHomeState extends State<LoginScreenHome>
             password:   '',
             email:      user.email,
             profilePic: user.photoURL);
+
+        // ── Sync to Firestore — best effort, never block login ──
+        try {
+          await FirebaseFirestore.instance
+              .collection('users')
+              .doc(user.uid)
+              .set({
+            'displayName': user.displayName ?? user.email?.split('@')[0] ?? 'User',
+            'email':       user.email ?? '',
+            'photoUrl':    user.photoURL ?? '',
+            'uid':         user.uid,
+            'isLocalUser': false,
+            'updatedAt':   FieldValue.serverTimestamp(),
+          }, SetOptions(merge: true));
+          await db.syncLocalUserToFirestore(localId);
+        } catch (syncError) {
+          // Sync failed — log it but don't block login
+          developer.log('Firestore sync failed: $syncError', name: 'Login');
+        }
+
         if (mounted) {
           Navigator.of(context).pushReplacement(
               MaterialPageRoute(

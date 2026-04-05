@@ -1,9 +1,32 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:sqflite/sqflite.dart';
 
 class DatabaseHelper {
   static const _dbName    = 'campusaid.db';
   // v1→imageUrl, v2→gamification, v3→skillCards, v4→threads+notifications+commentCount
   static const _dbVersion = 5; // v5 → isAccepted on comments
+
+  // Add this method to DatabaseHelper class
+  Future<void> syncLocalUserToFirestore(int localUserId) async {
+    final user = await getUserById(localUserId);
+    if (user == null) return;
+
+    // Use localUserId as the Firestore doc ID for local users
+    final docId = 'local_$localUserId';
+
+    await FirebaseFirestore.instance
+        .collection('users')
+        .doc(docId)
+        .set({
+      'displayName': user['fullName'] ?? user['userName'] ?? 'User',
+      'email':       user['email'] ?? '',
+      'photoUrl':    user['profilePic'] ?? '',
+      'uid':         docId,
+      'localId':     localUserId,
+      'isLocalUser': true,
+      'updatedAt':   FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+  }
 
   Database? _db;
 

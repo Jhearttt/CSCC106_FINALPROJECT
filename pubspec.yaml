@@ -41,6 +41,11 @@ dependencies:
   connectivity_plus: ^5.0.2
   image_picker: ^1.0.7
   flutter_image_compress: ^2.3.0
+  file_picker: ^8.0.0
+  url_launcher: ^6.3.0
+  path_provider: ^2.1.2
+  flutter_pdfview: ^1.3.2
+
 
     # ── Firebase SDK — all pinned to the same BoM-compatible set ──────────────
   firebase_core: ^3.12.1

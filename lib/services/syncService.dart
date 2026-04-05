@@ -132,22 +132,21 @@ class SyncService {
       urgencyLevel: urgencyLevel, imageUrl: imageUrl,
     );
     if (localId <= 0) return localId;
-    if (ConnectivityService.instance.isOnline) {
-      try {
-        await _firestore.collection(_kPosts).doc(localId.toString()).set({
-          'localId': localId, 'userId': userId,
-          'userFullName': userFullName, 'userUserName': userUserName,
-          'title': title, 'description': description,
-          'postType': postType, 'category': category,
-          'status': status, 'urgencyLevel': urgencyLevel,
-          'imageUrl': imageUrl, 'isBoosted': 0,
-          'datePosted': FieldValue.serverTimestamp(),
-        });
-        await _db.markPostSynced(localId);
-        developer.log('Post $localId saved to Firestore', name: 'SyncService');
-      } catch (e) {
-        developer.log('Firestore write failed: $e', name: 'SyncService');
-      }
+    // AFTER — remove the connectivity check, always try Firestore
+    try {
+      await _firestore.collection(_kPosts).doc(localId.toString()).set({
+        'localId': localId, 'userId': userId,
+        'userFullName': userFullName, 'userUserName': userUserName,
+        'title': title, 'description': description,
+        'postType': postType, 'category': category,
+        'status': status, 'urgencyLevel': urgencyLevel,
+        'imageUrl': imageUrl, 'isBoosted': 0,
+        'datePosted': FieldValue.serverTimestamp(),
+      });
+      await _db.markPostSynced(localId);
+      developer.log('Post $localId saved to Firestore', name: 'SyncService');
+    } catch (e) {
+      developer.log('Firestore write failed: $e', name: 'SyncService');
     }
     return localId;
   }

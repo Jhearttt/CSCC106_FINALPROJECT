@@ -5,6 +5,7 @@ import 'package:final_project/frontend/dashboard.dart';
 import 'package:final_project/frontend/loginScreen.dart';
 import 'package:final_project/frontend/notificationsScreen.dart';
 import 'package:final_project/frontend/profileScreen.dart';
+import 'package:final_project/chat/hubScreen.dart';
 import 'package:final_project/GoogleServices/auth_service.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
@@ -44,17 +45,14 @@ const _tabDashboard  = 0;
 const _tabCommunity  = 1;
 const _tabCreate     = 2;
 const _tabProfile    = 3;
+const _tabHub        = 4;
 
 class Homepage extends StatelessWidget {
   final int? localUserId;
   const Homepage({super.key, this.localUserId});
 
   @override
-  Widget build(BuildContext context) => MaterialApp(
-    debugShowCheckedModeBanner: false,
-    theme: ThemeData(scaffoldBackgroundColor: kBase),
-    home: HomePageHome(localUserId: localUserId),
-  );
+  Widget build(BuildContext context) => HomePageHome(localUserId: localUserId);
 }
 
 class HomePageHome extends StatefulWidget {
@@ -70,6 +68,7 @@ class _HomePageHomeState extends State<HomePageHome>
   // SRS navigation: Dashboard | Community Feed | Create Post | Profile
   int _tab = _tabDashboard;
   User? _user;
+  String _localUserName = 'User';
 
   // Screens for tab indices 0, 1, 3 — Create Post (index 2) is launched modally
   late final List<Widget?> _screens;
@@ -82,14 +81,30 @@ class _HomePageHomeState extends State<HomePageHome>
   void initState() {
     super.initState();
     _user = FirebaseAuth.instance.currentUser;
+    _loadLocalUserName();
     _screens = [
-      DashboardHome(localUserId: widget.localUserId),           // 0 Dashboard
-      CommunityFeedScreen(localUserId: widget.localUserId),     // 1 Community
-      null,                                                      // 2 Create Post — modal
-      ProfileScreen(localUserId: widget.localUserId,            // 3 Profile
-          embeddedMode: true,
-          tabNotifier: _profileTabNotifier),
+      DashboardHome(localUserId: widget.localUserId),
+      CommunityFeedScreen(localUserId: widget.localUserId),
+      null,
+      ProfileScreen(
+        localUserId: widget.localUserId,
+        embeddedMode: true,
+        tabNotifier: _profileTabNotifier,
+      ),
+      null, // ← Hub always built fresh in body
     ];
+  }
+
+  // ── Add this method ────────────────────────────────────────────────────
+  Future<void> _loadLocalUserName() async {
+    if (widget.localUserId != null) {
+      final user = await DatabaseHelper().getUserById(widget.localUserId!);
+      if (user != null && mounted) {
+        setState(() {
+          _localUserName = user['fullName'] ?? user['userName'] ?? 'User';
+        });
+      }
+    }
   }
 
   // ── Create Post tab launches as a full screen then returns to Community ──
@@ -123,9 +138,15 @@ class _HomePageHomeState extends State<HomePageHome>
         switchInCurve: Curves.easeOutCubic,
         transitionBuilder: (child, anim) =>
             FadeTransition(opacity: anim, child: child),
+        // In build(), update the body:
         child: KeyedSubtree(
           key: ValueKey(_tab),
-          child: _screens[_tab] ?? const SizedBox.shrink(),
+          child: _tab == _tabHub
+              ? HubScreen(
+            currentUserId: _user?.uid ?? 'local_${widget.localUserId}',
+            currentUserName: _user?.displayName ?? _localUserName,
+          )
+              : _screens[_tab] ?? const SizedBox.shrink(),
         ),
       ),
       bottomNavigationBar: _buildBottomNav(),
@@ -264,6 +285,7 @@ class _HomePageHomeState extends State<HomePageHome>
               _navPill(_tabDashboard,  Icons.dashboard_rounded,    "Dashboard"),
               _navPill(_tabCommunity,  Icons.people_alt_rounded,   "Community"),
               _navPill(_tabProfile,    Icons.person_rounded,       "Profile"),
+              _navPill(_tabHub,        Icons.message_rounded,       "Chat"),  // ← fixed
             ],
           ),
         ),
@@ -388,7 +410,11 @@ class _HomePageHomeState extends State<HomePageHome>
               Navigator.pop(context);
               Navigator.push(context, MaterialPageRoute(
                   builder: (_) => NotificationsScreen(
-                      localUserId: widget.localUserId)));
+                    localUserId:     widget.localUserId,
+                    firebaseUserId:  _user?.uid,
+                  )
+              )
+              );
             }),
 
             _drawerTile(
