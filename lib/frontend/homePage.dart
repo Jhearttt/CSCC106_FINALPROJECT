@@ -433,7 +433,7 @@ class _HomePageHomeState extends State<HomePageHome>
               _navPill(_tabDashboard, Icons.dashboard_rounded, "Dashboard"),
               _navPill(_tabCommunity, Icons.people_alt_rounded, "Community"),
               _navPill(_tabProfile, Icons.person_rounded, "Profile"),
-              _navPill(_tabHub, Icons.message_rounded, "Chat"), // ← fixed
+              _navPill(_tabHub, Icons.hub_rounded, "Hub"), // ← fixed
             ],
           ),
         ),

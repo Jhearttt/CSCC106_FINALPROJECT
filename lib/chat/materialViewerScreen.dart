@@ -17,6 +17,7 @@ class MaterialViewerScreen extends StatefulWidget {
   final String fileUrl;
   final String uploaderName;
   final String currentUserId;
+  final String uploaderUserId; // ← ADD THIS
 
   const MaterialViewerScreen({
     super.key,
@@ -26,6 +27,7 @@ class MaterialViewerScreen extends StatefulWidget {
     required this.fileUrl,
     required this.uploaderName,
     required this.currentUserId,
+    required this.uploaderUserId, // ← ADD THIS
   });
 
   @override
@@ -238,7 +240,7 @@ class _MaterialViewerScreenState extends State<MaterialViewerScreen> {
           ],
 
           // Add/update link field — only for uploader
-          if (widget.currentUserId.isNotEmpty)
+          if (widget.currentUserId == widget.uploaderUserId)
             Row(children: [
               Expanded(
                 child: TextField(

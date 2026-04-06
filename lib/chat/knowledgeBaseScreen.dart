@@ -370,12 +370,13 @@ class _MaterialCard extends StatelessWidget {
           context,
           MaterialPageRoute(
             builder: (_) => MaterialViewerScreen(
-              docId:         docId,
-              title:         title,
-              type:          type,
-              fileUrl:       fileUrl,
-              uploaderName:  uploaderName,
-              currentUserId: currentUserId,
+              docId:          docId,
+              title:          title,
+              type:           type,
+              fileUrl:        fileUrl,
+              uploaderName:   uploaderName,
+              currentUserId:  currentUserId,
+              uploaderUserId: uploadedBy, // ← use the existing parameter
             ),
           ),
         ),
