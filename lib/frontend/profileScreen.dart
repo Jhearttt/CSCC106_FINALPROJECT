@@ -519,7 +519,7 @@ class _ProfileScreenState extends State<ProfileScreen>
                         borderRadius: BorderRadius.circular(18),
                         border: Border.all(color: Colors.white, width: 2.5),
                         color: Colors.white.withOpacity(0.20),
-                        image: _photoUrl != null && _photoUrl!.startsWith('/9j/')
+                        image: _photoUrl != null && !_photoUrl!.startsWith('http')
                             ? DecorationImage(
                             image: MemoryImage(base64Decode(_photoUrl!)),
                             fit: BoxFit.cover)

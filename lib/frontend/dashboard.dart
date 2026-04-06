@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'package:final_project/backend/databaseHelper.dart';
 import 'package:final_project/frontend/createPostScreen.dart';
 import 'package:final_project/frontend/communityFeedScreen.dart';
@@ -56,25 +57,32 @@ Widget _buildAvatar({
   List<Color>       gradientColors = const [kViolet, kVioletLight],
   Color?            borderColor,
 }) {
+  ImageProvider? img;
+  if (photoUrl != null && photoUrl.isNotEmpty) {
+    if (photoUrl.startsWith('http')) {
+      img = NetworkImage(photoUrl);
+    } else {
+      try { img = MemoryImage(base64Decode(photoUrl)); } catch (_) {}
+    }
+  }
   return Container(
     width: size, height: size,
     decoration: BoxDecoration(
       shape: BoxShape.circle,
-      gradient: (photoUrl == null || photoUrl.isEmpty)
+      gradient: img == null
           ? LinearGradient(colors: gradientColors,
           begin: Alignment.topLeft, end: Alignment.bottomRight)
           : null,
-      color: (photoUrl != null && photoUrl.isNotEmpty)
-          ? Colors.transparent : null,
+      color: img != null ? Colors.transparent : null,
       border: borderColor != null
           ? Border.all(color: borderColor, width: 2) : null,
       boxShadow: [BoxShadow(color: kViolet.withOpacity(0.18),
           blurRadius: 8, offset: const Offset(0, 3))],
-      image: (photoUrl != null && photoUrl.isNotEmpty)
-          ? DecorationImage(image: NetworkImage(photoUrl), fit: BoxFit.cover)
+      image: img != null
+          ? DecorationImage(image: img, fit: BoxFit.cover)
           : null,
     ),
-    child: (photoUrl == null || photoUrl.isEmpty)
+    child: img == null
         ? Center(child: Text(initial, style: TextStyle(
         color: Colors.white,
         fontSize: size * 0.38,
@@ -110,7 +118,10 @@ class _DashboardHomeState extends State<DashboardHome> {
   User? get _user => FirebaseAuth.instance.currentUser;
 
   @override
-  void initState() { super.initState(); _refreshDashboard(); }
+  void initState() { super.initState(); _refreshDashboard(); DatabaseHelper.profilePicVersion.addListener(_refreshDashboard); }
+
+  @override
+  void dispose() { DatabaseHelper.profilePicVersion.removeListener(_refreshDashboard); super.dispose(); }
 
   Future<void> _refreshDashboard() async {
     setState(() => _loading = true);

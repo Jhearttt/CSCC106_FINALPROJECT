@@ -188,10 +188,12 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
     });
     _loadPosts();
     _startRealtimeListener();
+    DatabaseHelper.profilePicVersion.addListener(_loadPosts);
   }
 
   @override
   void dispose() {
+    DatabaseHelper.profilePicVersion.removeListener(_loadPosts);
     _firestoreSub?.cancel();
     _connectivitySub?.cancel();
     _bannerCtrl.dispose();
@@ -979,24 +981,33 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
     );
   }
 
-  Widget _buildAvatar(String? photoUrl, String initial, double size) =>
-      Container(
-        width: size, height: size,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          gradient: const LinearGradient(
-              colors: [_kViolet, _kVioletLight],
-              begin: Alignment.topLeft, end: Alignment.bottomRight),
-          boxShadow: [BoxShadow(color: _kViolet.withOpacity(0.28), blurRadius: 6)],
-          image: photoUrl != null && photoUrl.isNotEmpty
-              ? DecorationImage(image: NetworkImage(photoUrl), fit: BoxFit.cover)
-              : null,
-        ),
-        child: photoUrl == null || photoUrl.isEmpty
-            ? Center(child: Text(initial, style: TextStyle(
-            color: Colors.white, fontSize: size * 0.38,
-            fontWeight: FontWeight.w800))) : null,
-      );
+  Widget _buildAvatar(String? photoUrl, String initial, double size) {
+    ImageProvider? img;
+    if (photoUrl != null && photoUrl.isNotEmpty) {
+      if (photoUrl.startsWith('http')) {
+        img = NetworkImage(photoUrl);
+      } else {
+        try { img = MemoryImage(base64Decode(photoUrl)); } catch (_) {}
+      }
+    }
+    return Container(
+      width: size, height: size,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        gradient: const LinearGradient(
+            colors: [_kViolet, _kVioletLight],
+            begin: Alignment.topLeft, end: Alignment.bottomRight),
+        boxShadow: [BoxShadow(color: _kViolet.withOpacity(0.28), blurRadius: 6)],
+        image: img != null
+            ? DecorationImage(image: img, fit: BoxFit.cover)
+            : null,
+      ),
+      child: img == null
+          ? Center(child: Text(initial, style: TextStyle(
+          color: Colors.white, fontSize: size * 0.38,
+          fontWeight: FontWeight.w800))) : null,
+    );
+  }
 
   Widget _chip(IconData icon, String label, Color bg, Color fg) => Container(
     padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
@@ -1370,23 +1381,32 @@ class PostDetailCard extends StatelessWidget {
     );
   }
 
-  Widget _buildAvatar(String? photoUrl, String initial, double size) =>
-      Container(
-        width: size, height: size,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          gradient: const LinearGradient(
-              colors: [_kViolet, _kVioletLight],
-              begin: Alignment.topLeft, end: Alignment.bottomRight),
-          image: photoUrl != null && photoUrl.isNotEmpty
-              ? DecorationImage(image: NetworkImage(photoUrl), fit: BoxFit.cover)
-              : null,
-        ),
-        child: photoUrl == null || photoUrl.isEmpty
-            ? Center(child: Text(initial, style: TextStyle(
-            color: Colors.white, fontSize: size * 0.38,
-            fontWeight: FontWeight.w800))) : null,
-      );
+  Widget _buildAvatar(String? photoUrl, String initial, double size) {
+    ImageProvider? img;
+    if (photoUrl != null && photoUrl.isNotEmpty) {
+      if (photoUrl.startsWith('http')) {
+        img = NetworkImage(photoUrl);
+      } else {
+        try { img = MemoryImage(base64Decode(photoUrl)); } catch (_) {}
+      }
+    }
+    return Container(
+      width: size, height: size,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        gradient: const LinearGradient(
+            colors: [_kViolet, _kVioletLight],
+            begin: Alignment.topLeft, end: Alignment.bottomRight),
+        image: img != null
+            ? DecorationImage(image: img, fit: BoxFit.cover)
+            : null,
+      ),
+      child: img == null
+          ? Center(child: Text(initial, style: TextStyle(
+          color: Colors.white, fontSize: size * 0.38,
+          fontWeight: FontWeight.w800))) : null,
+    );
+  }
 
   Widget _badge(IconData? icon, String label, Color fg, {Color? bg}) =>
       Container(

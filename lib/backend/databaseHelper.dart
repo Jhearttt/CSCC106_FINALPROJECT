@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/foundation.dart';
 import 'package:sqflite/sqflite.dart';
 
 class DatabaseHelper {
@@ -53,7 +54,10 @@ class DatabaseHelper {
       where: 'id = ?',
       whereArgs: [userId],
     );
+    profilePicVersion.value++;
   }
+
+  static final ValueNotifier<int> profilePicVersion = ValueNotifier(0);
 
   Database? _db;
 
