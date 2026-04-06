@@ -2,13 +2,13 @@ import 'dart:convert';
 import 'dart:typed_data';
 import 'package:awesome_dialog/awesome_dialog.dart';
 import 'package:final_project/backend/databaseHelper.dart';
-import 'package:final_project/frontend/communityFeedScreen.dart';
 import 'package:final_project/frontend/createPostScreen.dart';
-import 'package:final_project/frontend/loginScreen.dart';
-import 'package:final_project/GoogleServices/auth_service.dart';
+
 import 'package:final_project/services/syncService.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 
 const _kInk         = Color(0xFF1E1B4B);
 const _kInkMid      = Color(0xFF4338CA);
@@ -94,8 +94,6 @@ class ProfileScreen extends StatefulWidget {
   final int?  localUserId;
   final bool  embeddedMode;
   final bool  isOwnProfile;
-  /// Optional notifier to jump to a specific tab (0=Posts, 1=SkillCards)
-  /// from outside (e.g. drawer). Only used in embedded mode.
   final ValueNotifier<int>? tabNotifier;
 
   const ProfileScreen({
@@ -125,7 +123,6 @@ class _ProfileScreenState extends State<ProfileScreen>
     super.initState();
     _tabCtrl = TabController(length: 2, vsync: this);
     _loadData();
-    // Listen for external tab jumps (e.g. drawer → My Skill Cards)
     widget.tabNotifier?.addListener(_onTabNotified);
   }
 
@@ -150,7 +147,6 @@ class _ProfileScreenState extends State<ProfileScreen>
       final raw   = await db.getPostsByUser(widget.localUserId!);
       _skillCards = await db.getSkillCards(widget.localUserId!);
 
-      // Sort: High urgency first, then Medium, then Low; resolved sink to bottom
       int _urgencyRank(String u) => u == 'High' ? 0 : u == 'Medium' ? 1 : 2;
 
       final open = raw.where((p) => p['status'] != 'Resolved').toList()
@@ -170,8 +166,6 @@ class _ProfileScreenState extends State<ProfileScreen>
     if (mounted) setState(() => _loading = false);
   }
 
-  // Only use Firebase user data when viewing our OWN profile.
-  // When viewing someone else's profile, always use SQLite _localUser only.
   String get _displayName =>
       widget.isOwnProfile
           ? (_firebaseUser?.displayName ?? _localUser?['fullName'] ?? 'Guest User')
@@ -186,11 +180,135 @@ class _ProfileScreenState extends State<ProfileScreen>
       widget.isOwnProfile
           ? (_firebaseUser?.photoURL ?? _localUser?['profilePic'])
           : (_localUser?['profilePic'] as String?);
+
   String get _initials     =>
       _displayName.isNotEmpty ? _displayName[0].toUpperCase() : '?';
   int get _points    => (_localUser?['points']    as int? ?? 0);
   int get _helpCount => (_localUser?['helpCount'] as int? ?? 0);
   int get _streak    => (_localUser?['streak']    as int? ?? 0);
+
+  // ── PROFILE PICTURE PICKER ────────────────────────────────────────────────
+  Future<void> _pickAndUploadImage() async {
+    final ImagePicker picker = ImagePicker();
+
+    // Show options
+    final result = await showModalBottomSheet<String>(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 12),
+            Container(
+              width: 36,
+              height: 4,
+              decoration: BoxDecoration(
+                color: Colors.grey.shade300,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            const SizedBox(height: 16),
+            ListTile(
+              leading: const Icon(Icons.camera_alt, color: _kViolet),
+              title: const Text('Take a photo'),
+              onTap: () => Navigator.pop(context, 'camera'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.photo_library, color: _kViolet),
+              title: const Text('Choose from gallery'),
+              onTap: () => Navigator.pop(context, 'gallery'),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+
+    if (result == null) return;
+
+    XFile? pickedImage;
+    if (result == 'camera') {
+      pickedImage = await picker.pickImage(source: ImageSource.camera);
+    } else if (result == 'gallery') {
+      pickedImage = await picker.pickImage(source: ImageSource.gallery);
+    }
+
+    if (pickedImage != null && mounted) {
+      // Show loading
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => const Center(
+          child: CircularProgressIndicator(color: _kViolet),
+        ),
+      );
+
+      try {
+        // Read image as bytes
+        final bytes = await pickedImage.readAsBytes();
+        final base64Image = base64Encode(bytes);
+
+        // Update local database
+        final db = DatabaseHelper();
+        await db.updateUserProfilePicture(widget.localUserId!, base64Image);
+
+        // Update Firestore if user has a Firebase account
+        if (_firebaseUser != null && widget.isOwnProfile) {
+          await FirebaseFirestore.instance
+              .collection('users')
+              .doc(_firebaseUser!.uid)
+              .update({
+            'photoUrl': base64Image,
+            'updatedAt': FieldValue.serverTimestamp(),
+          });
+
+          // Also update local_ prefixed document
+          if (widget.localUserId != null) {
+            await FirebaseFirestore.instance
+                .collection('users')
+                .doc('local_${widget.localUserId}')
+                .set({
+              'photoUrl': base64Image,
+              'updatedAt': FieldValue.serverTimestamp(),
+            }, SetOptions(merge: true));
+          }
+        }
+
+        // Reload user data
+        await _loadData();
+
+        // Close loading dialog
+        if (mounted) Navigator.pop(context);
+
+        // Show success message
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Profile picture updated successfully!'),
+              backgroundColor: Colors.green,
+              duration: Duration(seconds: 2),
+            ),
+          );
+        }
+      } catch (e) {
+        // Close loading dialog
+        if (mounted) Navigator.pop(context);
+
+        // Show error message
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Failed to update profile picture: $e'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+      }
+    }
+  }
 
   String _timeAgo(String dateStr) {
     try {
@@ -204,7 +322,6 @@ class _ProfileScreenState extends State<ProfileScreen>
     } catch (_) { return ''; }
   }
 
-  // ── Navigate to edit post ─────────────────────────────────────────────────
   void _goToEdit(Map<String, dynamic> post) {
     Navigator.of(context).push(PageRouteBuilder(
       pageBuilder: (_, anim, __) => CreatePostScreen(
@@ -218,7 +335,6 @@ class _ProfileScreenState extends State<ProfileScreen>
     )).then((_) => _loadData());
   }
 
-  // ── Show three-dot options as centered dialog ────────────────────────────
   void _showPostOptions(BuildContext context, Map<String, dynamic> post) {
     showGeneralDialog(
       context: context,
@@ -245,7 +361,6 @@ class _ProfileScreenState extends State<ProfileScreen>
             ],
           ),
           child: Column(mainAxisSize: MainAxisSize.min, children: [
-            // Post title header
             Container(
               width: double.infinity,
               padding: const EdgeInsets.fromLTRB(20, 20, 20, 14),
@@ -261,10 +376,8 @@ class _ProfileScreenState extends State<ProfileScreen>
                       fontWeight: FontWeight.w700, fontSize: 14)),
             ),
             const SizedBox(height: 8),
-            // Options
             _optionTile(ctx, Icons.edit_rounded, 'Edit Post', _kSky,
                     () { Navigator.pop(ctx); _goToEdit(post); }),
-            // Resolving is done via Accept Solution in comments — only allow Reopen
             if (post['status'] == 'Resolved')
               _optionTile(ctx, Icons.restart_alt_rounded, 'Reopen Post',
                   _kMint, () async {
@@ -288,7 +401,6 @@ class _ProfileScreenState extends State<ProfileScreen>
                   ).show();
                 }),
             const SizedBox(height: 8),
-            // Cancel
             GestureDetector(
               onTap: () => Navigator.pop(ctx),
               child: Container(
@@ -353,7 +465,6 @@ class _ProfileScreenState extends State<ProfileScreen>
           ? const Center(child: CircularProgressIndicator(color: _kViolet))
           : Column(children: [
 
-        // ── Top bar ──
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
           child: Row(children: [
@@ -380,76 +491,110 @@ class _ProfileScreenState extends State<ProfileScreen>
           ]),
         ),
 
-        // ── Hero card ──
-        Container(
-          margin: const EdgeInsets.fromLTRB(16, 14, 16, 0),
-          padding: const EdgeInsets.all(20),
-          decoration: BoxDecoration(
-            gradient: const LinearGradient(
-                colors: [Color(0xFF7B6CF6), Color(0xFFA78BFA), Color(0xFFEC4899)],
-                begin: Alignment.topLeft, end: Alignment.bottomRight),
-            borderRadius: BorderRadius.circular(26),
-            boxShadow: [
-              BoxShadow(color: _kViolet.withOpacity(0.28),
-                  blurRadius: 22, offset: const Offset(0, 8)),
-              BoxShadow(color: _kBlush.withOpacity(0.14),
-                  blurRadius: 12, offset: const Offset(0, 4)),
-            ],
-          ),
-          child: Column(children: [
-            Row(children: [
-              Container(
-                width: 62, height: 62,
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(18),
-                  border: Border.all(color: Colors.white, width: 2.5),
-                  color: Colors.white.withOpacity(0.20),
-                  image: _photoUrl != null ? DecorationImage(
-                      image: NetworkImage(_photoUrl!), fit: BoxFit.cover) : null,
+        // ── Hero card with editable profile picture ──
+        GestureDetector(
+          onTap: widget.isOwnProfile ? _pickAndUploadImage : null,
+          child: Container(
+            margin: const EdgeInsets.fromLTRB(16, 14, 16, 0),
+            padding: const EdgeInsets.all(20),
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(
+                  colors: [Color(0xFF7B6CF6), Color(0xFFA78BFA), Color(0xFFEC4899)],
+                  begin: Alignment.topLeft, end: Alignment.bottomRight),
+              borderRadius: BorderRadius.circular(26),
+              boxShadow: [
+                BoxShadow(color: _kViolet.withOpacity(0.28),
+                    blurRadius: 22, offset: const Offset(0, 8)),
+                BoxShadow(color: _kBlush.withOpacity(0.14),
+                    blurRadius: 12, offset: const Offset(0, 4)),
+              ],
+            ),
+            child: Column(children: [
+              Row(children: [
+                Stack(
+                  children: [
+                    Container(
+                      width: 62, height: 62,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(18),
+                        border: Border.all(color: Colors.white, width: 2.5),
+                        color: Colors.white.withOpacity(0.20),
+                        image: _photoUrl != null && _photoUrl!.startsWith('/9j/')
+                            ? DecorationImage(
+                            image: MemoryImage(base64Decode(_photoUrl!)),
+                            fit: BoxFit.cover)
+                            : (_photoUrl != null && _photoUrl!.startsWith('http')
+                            ? DecorationImage(
+                            image: NetworkImage(_photoUrl!),
+                            fit: BoxFit.cover)
+                            : null),
+                      ),
+                      child: _photoUrl == null
+                          ? Center(child: Text(_initials, style: const TextStyle(
+                          color: Colors.white, fontSize: 24,
+                          fontWeight: FontWeight.w900)))
+                          : null,
+                    ),
+                    // Camera overlay for editing
+                    if (widget.isOwnProfile)
+                      Positioned(
+                        bottom: -4,
+                        right: -4,
+                        child: Container(
+                          width: 28,
+                          height: 28,
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            shape: BoxShape.circle,
+                            border: Border.all(color: _kViolet, width: 2),
+                          ),
+                          child: const Icon(
+                            Icons.camera_alt,
+                            color: _kViolet,
+                            size: 14,
+                          ),
+                        ),
+                      ),
+                  ],
                 ),
-                child: _photoUrl == null
-                    ? Center(child: Text(_initials, style: const TextStyle(
-                    color: Colors.white, fontSize: 24,
-                    fontWeight: FontWeight.w900))) : null,
-              ),
-              const SizedBox(width: 14),
-              Expanded(child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text(_displayName, style: const TextStyle(fontSize: 16,
-                    fontWeight: FontWeight.w900, color: Colors.white,
-                    letterSpacing: -0.3)),
-                const SizedBox(height: 2),
-                Text(_displayEmail, style: TextStyle(fontSize: 11.5,
-                    color: Colors.white.withOpacity(0.70))),
-                const SizedBox(height: 8),
-                Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                    decoration: BoxDecoration(
-                        color: _badgeColor(_points).withOpacity(0.20),
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(
-                            color: _badgeColor(_points).withOpacity(0.50))),
-                    child: Text(_badgeLabel(_points), style: TextStyle(
-                        fontSize: 11, fontWeight: FontWeight.w700,
-                        color: _badgeColor(_points)))),
-              ])),
+                const SizedBox(width: 14),
+                Expanded(child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text(_displayName, style: const TextStyle(fontSize: 16,
+                      fontWeight: FontWeight.w900, color: Colors.white,
+                      letterSpacing: -0.3)),
+                  const SizedBox(height: 2),
+                  Text(_displayEmail, style: TextStyle(fontSize: 11.5,
+                      color: Colors.white.withOpacity(0.70))),
+                  const SizedBox(height: 8),
+                  Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                      decoration: BoxDecoration(
+                          color: _badgeColor(_points).withOpacity(0.20),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(
+                              color: _badgeColor(_points).withOpacity(0.50))),
+                      child: Text(_badgeLabel(_points), style: TextStyle(
+                          fontSize: 11, fontWeight: FontWeight.w700,
+                          color: _badgeColor(_points)))),
+                ])),
+              ]),
+              const SizedBox(height: 16),
+              Row(children: [
+                _reputationStat('⭐', '$_points',          'Points'),
+                _divider(),
+                _reputationStat('🤝', '$_helpCount',       'Helped'),
+                _divider(),
+                _reputationStat('🔥', '$_streak',          'Day Streak'),
+                _divider(),
+                _reputationStat('📝', '${_myPosts.length}','Posts'),
+              ]),
             ]),
-            const SizedBox(height: 16),
-            Row(children: [
-              _reputationStat('⭐', '$_points',          'Points'),
-              _divider(),
-              _reputationStat('🤝', '$_helpCount',       'Helped'),
-              _divider(),
-              _reputationStat('🔥', '$_streak',          'Day Streak'),
-              _divider(),
-              _reputationStat('📝', '${_myPosts.length}','Posts'),
-            ]),
-          ]),
+          ),
         ),
 
         const SizedBox(height: 14),
 
-        // ── Tabs ──
         Container(
           margin: const EdgeInsets.symmetric(horizontal: 16),
           decoration: BoxDecoration(
@@ -479,8 +624,6 @@ class _ProfileScreenState extends State<ProfileScreen>
           children: [_buildPostsTab(), _buildSkillCardsTab()],
         )),
 
-        // ── Log out (only on own profile) ──
-
       ])),
     ]);
 
@@ -500,7 +643,6 @@ class _ProfileScreenState extends State<ProfileScreen>
   Widget _divider() => Container(width: 1, height: 36,
       color: Colors.white.withOpacity(0.25));
 
-  // ── Open post detail as centered floating card (same as community feed) ──
   void _openPostDetail(Map<String, dynamic> post) {
     showGeneralDialog(
       context: context,
@@ -544,7 +686,6 @@ class _ProfileScreenState extends State<ProfileScreen>
     );
   }
 
-  // ── Posts tab ──────────────────────────────────────────────────────────────
   Widget _buildPostsTab() {
     return Stack(children: [
       _myPosts.isEmpty
@@ -560,7 +701,6 @@ class _ProfileScreenState extends State<ProfileScreen>
         itemCount: _myPosts.length,
         itemBuilder: (_, i) => _buildPostCard(_myPosts[i]),
       ),
-      // FAB — only on own profile
       if (widget.isOwnProfile)
         Positioned(bottom: 20, right: 20,
           child: GestureDetector(
@@ -599,19 +739,16 @@ class _ProfileScreenState extends State<ProfileScreen>
     ]);
   }
 
-  // ── Image widget: handles base64 data URIs and network URLs ─────────────
-  // ignore: non_constant_identifier_names
   Widget _ProfilePostImage({
     required String src,
     double? size,
     BoxFit fit = BoxFit.cover,
   }) {
-    final isBase64 = src.startsWith('data:image');
+    final isBase64 = src.startsWith('/9j/') || src.startsWith('data:image');
     Widget img;
     if (isBase64) {
       try {
-        final comma = src.indexOf(',');
-        final bytes = base64Decode(src.substring(comma + 1));
+        final bytes = base64Decode(src);
         img = Image.memory(bytes,
             width: size, height: size, fit: fit,
             errorBuilder: (_, __, ___) => _brokenImg(size));
@@ -632,7 +769,6 @@ class _ProfileScreenState extends State<ProfileScreen>
       child: const Center(child: Icon(
           Icons.broken_image_outlined, color: _kVioletLight)));
 
-  // ── Post card with three-dot menu + tap to open detail ───────────────────
   Widget _buildPostCard(Map<String, dynamic> post) {
     final isOpen    = post['status']    == 'Open';
     final urgency   = post['urgencyLevel'] as String? ?? 'Low';
@@ -658,11 +794,9 @@ class _ProfileScreenState extends State<ProfileScreen>
         ),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
 
-          // ── Top row: title badges three-dot ──
           Row(children: [
             Expanded(child: Text(post['title'] ?? '', style: const TextStyle(
                 fontWeight: FontWeight.w800, fontSize: 13.5, color: _kInk))),
-            // Urgency badge
             Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                 decoration: BoxDecoration(
@@ -678,7 +812,6 @@ class _ProfileScreenState extends State<ProfileScreen>
                       fontWeight: FontWeight.w700, color: urgencyColor)),
                 ])),
             const SizedBox(width: 6),
-            // Status badge
             Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                 decoration: BoxDecoration(
@@ -694,7 +827,6 @@ class _ProfileScreenState extends State<ProfileScreen>
                         color: isOpen ? const Color(0xFF9D174D)
                             : const Color(0xFF065F46)))),
             const SizedBox(width: 4),
-            // Three-dot menu — only on own profile
             if (widget.isOwnProfile)
               GestureDetector(
                 onTap: () => _showPostOptions(context, post),
@@ -708,9 +840,7 @@ class _ProfileScreenState extends State<ProfileScreen>
 
           const SizedBox(height: 8),
 
-          // ── Description + thumbnail row ──
           Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            // Description text
             Expanded(
               child: Text(
                   (post['description'] as String? ?? '').length > (hasImage ? 60 : 80)
@@ -720,7 +850,6 @@ class _ProfileScreenState extends State<ProfileScreen>
                       fontSize: 12.5, color: _kInkLight, height: 1.4)),
             ),
 
-            // ── Side thumbnail ──
             if (hasImage) ...[
               const SizedBox(width: 10),
               GestureDetector(
@@ -730,7 +859,6 @@ class _ProfileScreenState extends State<ProfileScreen>
                     borderRadius: BorderRadius.circular(10),
                     child: _ProfilePostImage(src: imgUrl, size: 68),
                   ),
-                  // Expand hint
                   Positioned.fill(
                     child: ClipRRect(
                       borderRadius: BorderRadius.circular(10),
@@ -749,7 +877,6 @@ class _ProfileScreenState extends State<ProfileScreen>
                       ),
                     ),
                   ),
-                  // Border
                   Positioned.fill(
                     child: ClipRRect(
                       borderRadius: BorderRadius.circular(10),
@@ -767,7 +894,6 @@ class _ProfileScreenState extends State<ProfileScreen>
 
           const SizedBox(height: 8),
 
-          // ── Chips + date ──
           Row(children: [
             _chip(post['postType'] as String? ?? 'Post', _kVioletSoft, _kVioletLight),
             const SizedBox(width: 6),
@@ -785,7 +911,6 @@ class _ProfileScreenState extends State<ProfileScreen>
     );
   }
 
-  // ── Full-screen image viewer (base64 + network) ───────────────────────────
   void _openImageFullScreen(BuildContext context, String src) {
     Navigator.of(context).push(PageRouteBuilder(
       opaque: false,
@@ -823,7 +948,6 @@ class _ProfileScreenState extends State<ProfileScreen>
       child: Text(label, style: TextStyle(fontSize: 10,
           fontWeight: FontWeight.w700, color: fg)));
 
-  // ── Skill Cards tab ────────────────────────────────────────────────────────
   Widget _buildSkillCardsTab() {
     if (_skillCards.isEmpty) {
       return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center,
@@ -887,6 +1011,67 @@ class _ProfileScreenState extends State<ProfileScreen>
               ),
             ]),
           ]),
+    );
+  }
+}
+
+// Placeholder for PostDetailCard - you should have this from your existing code
+class PostDetailCard extends StatelessWidget {
+  final Map<String, dynamic> post;
+  final int? localUserId;
+  final Function(int, String) onToggleStatus;
+  final Function(int) onDelete;
+  final Function(Map<String, dynamic>) onEdit;
+
+  const PostDetailCard({
+    super.key,
+    required this.post,
+    required this.localUserId,
+    required this.onToggleStatus,
+    required this.onDelete,
+    required this.onEdit,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Material(
+        color: Colors.transparent,
+        child: Container(
+          margin: const EdgeInsets.all(20),
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(24),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(post['title'] ?? 'Post'),
+              const SizedBox(height: 16),
+              Text(post['description'] ?? ''),
+              const SizedBox(height: 16),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: [
+                  TextButton(
+                    onPressed: () => onToggleStatus(post['id'], post['status']),
+                    child: Text(post['status'] == 'Open' ? 'Resolve' : 'Reopen'),
+                  ),
+                  TextButton(
+                    onPressed: () => onEdit(post),
+                    child: const Text('Edit'),
+                  ),
+                  TextButton(
+                    onPressed: () => onDelete(post['id']),
+                    child: const Text('Delete', style: TextStyle(color: Colors.red)),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

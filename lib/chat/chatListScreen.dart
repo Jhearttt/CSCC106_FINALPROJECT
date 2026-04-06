@@ -5,6 +5,7 @@ import 'package:final_project/services/chatService.dart';
 import 'chatRoomScreen.dart';
 import 'package:final_project/backend/databaseHelper.dart';
 
+
 const _kAccent = Color(0xFF6366F1);
 const _kInk    = Color(0xFF1E1B4B);
 const _kBg     = Color(0xFFF8FAFC);
@@ -45,7 +46,6 @@ class _ConvoAvatarState extends State<ConvoAvatar> {
           .doc(widget.otherPersonId)
           .get();
 
-      // Fallback: try local_ prefix
       if (!doc.exists) {
         final altId = widget.otherPersonId.startsWith('local_')
             ? widget.otherPersonId
@@ -144,18 +144,57 @@ class _ChatListScreenState extends State<ChatListScreen> {
     super.dispose();
   }
 
-  // ── Other participant name ─────────────────────────────────────────────────
-  String _getOtherPersonName(Map<String, dynamic> data) {
-    final names = Map<String, String>.from(data['participantNames'] ?? {});
-    names.remove(widget.currentUserId);
-    return names.values.firstOrNull ?? 'Unknown';
+  // Helper to check if two IDs represent the same user
+  bool _isSameUser(String id1, String id2) {
+    if (id1 == id2) return true;
+
+    // Both IDs must have the same format (both with local_ prefix or both without)
+    final id1HasLocal = id1.startsWith('local_');
+    final id2HasLocal = id2.startsWith('local_');
+    
+    if (id1HasLocal != id2HasLocal) return false;
+
+    // Extract numeric IDs only if both have the same format
+    final num1 = id1HasLocal ? id1.replaceFirst('local_', '') : id1;
+    final num2 = id2HasLocal ? id2.replaceFirst('local_', '') : id2;
+
+    return num1 == num2 && num1.isNotEmpty;
   }
 
-  // ── Other participant ID ───────────────────────────────────────────────────
+  // ── Get other participant's name ──────────────────────────────────────────
+  String _getOtherPersonName(Map<String, dynamic> data) {
+    final participants = List<String>.from(data['participants'] ?? []);
+    final participantNames = Map<String, String>.from(data['participantNames'] ?? {});
+
+    // Find the participant that is NOT the current user
+    for (final participant in participants) {
+      if (!_isSameUser(participant, widget.currentUserId)) {
+        // This is the other person
+        if (participantNames.containsKey(participant)) {
+          return participantNames[participant]!;
+        }
+        // Fallback: clean up the ID for display
+        if (participant.startsWith('local_')) {
+          return 'User ${participant.replaceFirst('local_', '')}';
+        }
+        return participant;
+      }
+    }
+
+    return 'Unknown';
+  }
+
+  // ── Get other participant's ID ────────────────────────────────────────────
   String _getOtherPersonId(Map<String, dynamic> data) {
     final participants = List<String>.from(data['participants'] ?? []);
-    participants.remove(widget.currentUserId);
-    return participants.firstOrNull ?? '';
+
+    for (final participant in participants) {
+      if (!_isSameUser(participant, widget.currentUserId)) {
+        return participant;
+      }
+    }
+
+    return '';
   }
 
   // ── Format timestamp ───────────────────────────────────────────────────────
@@ -281,6 +320,8 @@ class _ChatListScreenState extends State<ChatListScreen> {
             final otherUserId = _getOtherPersonId(data);
             final lastMessage = data['lastMessage'] ?? '';
             final lastTime = data['lastMessageTime'] as Timestamp?;
+            final unreadCounts = Map<String, int>.from(data['unreadCounts'] ?? {});
+            final unreadCount = unreadCounts[widget.currentUserId] ?? 0;
 
             return _ConversationTile(
               key: ValueKey(convoId),
@@ -289,9 +330,11 @@ class _ChatListScreenState extends State<ChatListScreen> {
               otherPersonId: otherUserId,
               lastMessage: lastMessage,
               timeLabel: _formatTime(lastTime),
+              unreadCount: unreadCount,
               currentUserId: widget.currentUserId,
               currentUserName: widget.currentUserName,
               onDelete: () => _confirmDelete(convoId),
+              chatService: _chatService,  // Add this line
             );
           },
         );
@@ -341,6 +384,11 @@ class _ChatListScreenState extends State<ChatListScreen> {
             onPressed: () async {
               Navigator.pop(context);
               await ChatService().deleteConversation(conversationId);
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Conversation deleted')),
+                );
+              }
             },
             child: const Text('Delete',
                 style: TextStyle(color: Colors.red)),
@@ -360,9 +408,11 @@ class _ConversationTile extends StatelessWidget {
   final String       otherPersonId;
   final String       lastMessage;
   final String       timeLabel;
+  final int          unreadCount;
   final String       currentUserId;
   final String       currentUserName;
   final VoidCallback onDelete;
+  final ChatService  chatService;
 
   const _ConversationTile({
     super.key,
@@ -371,9 +421,11 @@ class _ConversationTile extends StatelessWidget {
     required this.otherPersonId,
     required this.lastMessage,
     required this.timeLabel,
+    required this.unreadCount,
     required this.currentUserId,
     required this.currentUserName,
     required this.onDelete,
+    required this.chatService,
   });
 
   @override
@@ -395,46 +447,110 @@ class _ConversationTile extends StatelessWidget {
       child: ListTile(
         contentPadding:
         const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-        leading: ConvoAvatar(
-          otherPersonId:   otherPersonId,
-          otherPersonName: otherPersonName,
+        leading: Stack(
+          clipBehavior: Clip.none,
+          children: [
+            ConvoAvatar(
+              otherPersonId:   otherPersonId,
+              otherPersonName: otherPersonName,
+            ),
+            if (unreadCount > 0)
+              Positioned(
+                right: -4,
+                top: -4,
+                child: Container(
+                  padding: const EdgeInsets.all(4),
+                  decoration: BoxDecoration(
+                    color: _kAccent,
+                    shape: BoxShape.circle,
+                    border: Border.all(color: Colors.white, width: 1.5),
+                  ),
+                  constraints: const BoxConstraints(
+                    minWidth: 20,
+                    minHeight: 20,
+                  ),
+                  child: Text(
+                    unreadCount > 99 ? '99+' : '$unreadCount',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 10,
+                      fontWeight: FontWeight.bold,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+              ),
+          ],
         ),
         title: Row(children: [
           Expanded(
-            child: Text(otherPersonName,
-                style: const TextStyle(
-                    fontWeight: FontWeight.w700,
-                    fontSize: 15, color: _kInk),
-                overflow: TextOverflow.ellipsis),
+            child: Text(
+              otherPersonName,
+              style: TextStyle(
+                fontWeight: unreadCount > 0 ? FontWeight.w800 : FontWeight.w600,
+                fontSize: 15,
+                color: _kInk,
+              ),
+              overflow: TextOverflow.ellipsis,
+            ),
           ),
-          Text(timeLabel,
-              style: const TextStyle(fontSize: 11, color: Colors.grey)),
+          Text(
+            timeLabel,
+            style: TextStyle(
+              fontSize: 11,
+              color: unreadCount > 0 ? _kAccent : Colors.grey,
+              fontWeight: unreadCount > 0 ? FontWeight.w600 : FontWeight.normal,
+            ),
+          ),
         ]),
         subtitle: Padding(
           padding: const EdgeInsets.only(top: 3),
-          child: Text(
-            lastMessage.isEmpty ? 'No messages yet' : lastMessage,
-            style: TextStyle(
-                fontSize: 13,
-                color: lastMessage.isEmpty
-                    ? Colors.grey.shade400
-                    : Colors.grey.shade600),
-            overflow: TextOverflow.ellipsis,
-            maxLines: 1,
+          child: Row(
+            children: [
+              if (unreadCount > 0)
+                Container(
+                  width: 8,
+                  height: 8,
+                  margin: const EdgeInsets.only(right: 6),
+                  decoration: const BoxDecoration(
+                    color: _kAccent,
+                    shape: BoxShape.circle,
+                  ),
+                ),
+              Expanded(
+                child: Text(
+                  lastMessage.isEmpty ? 'No messages yet' : lastMessage,
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: unreadCount > 0 ? FontWeight.w600 : FontWeight.normal,
+                    color: unreadCount > 0 ? _kInk : Colors.grey.shade600,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                  maxLines: 1,
+                ),
+              ),
+            ],
           ),
         ),
-        onTap: () => Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (_) => ChatRoomScreen(
-              conversationId:  conversationId,
-              currentUserId:   currentUserId,
-              currentUserName: currentUserName,
-              otherPersonName: otherPersonName,
-              otherPersonId:   otherPersonId,
-            ),
-          ),
-        ),
+        onTap: () async {
+          // Mark messages as read before opening chat
+          await chatService.markMessagesAsRead(conversationId, currentUserId);
+
+          if (context.mounted) {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => ChatRoomScreen(
+                  conversationId:  conversationId,
+                  currentUserId:   currentUserId,
+                  currentUserName: currentUserName,
+                  otherPersonName: otherPersonName,
+                  otherPersonId:   otherPersonId,
+                ),
+              ),
+            );
+          }
+        },
       ),
     );
   }

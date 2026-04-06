@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:final_project/frontend/loginScreen.dart';
 import 'package:flutter/material.dart';
 import 'package:final_project/frontend/profileScreen.dart';
 import 'package:final_project/backend/databaseHelper.dart';
@@ -45,12 +46,31 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
   String? _otherPhotoBase64;
   int? _otherLocalId;
 
+
   @override
   void initState() {
     super.initState();
     _controller.addListener(
             () => setState(() => _hasText = _controller.text.trim().isNotEmpty));
     _resolveSession();
+
+    // Mark messages as read when chat room opens
+    _markMessagesAsRead();
+  }
+
+  Future<void> _markMessagesAsRead() async {
+    // Wait a moment for session to resolve
+    await Future.delayed(const Duration(milliseconds: 500));
+    if (_sessionReady && mounted) {
+      await _chatService.markMessagesAsRead(widget.conversationId, _myCanonicalId);
+    }
+  }
+
+// Also call it when the widget gets focus (if user returns to chat)
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _markMessagesAsRead();
   }
 
   @override
@@ -516,31 +536,24 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
               leading: const Icon(Icons.delete_outline_rounded, color: Colors.red),
               title: const Text('Delete conversation', style: TextStyle(color: Colors.red)),
               onTap: () async {
-                // Close the bottom sheet first
-                if (mounted) Navigator.pop(context);
+                Navigator.pop(context); // close bottom sheet
 
-                // Show confirmation dialog
                 final confirm = await showDialog<bool>(
                   context: context,
                   barrierDismissible: false,
-                  builder: (_) => AlertDialog(
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(16)),
+                  builder: (dialogContext) => AlertDialog(
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                     title: const Text('Delete conversation?',
-                        style: TextStyle(
-                            fontSize: 16, fontWeight: FontWeight.w700)),
-                    content: const Text(
-                        'This will remove the conversation for both users.'),
+                        style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+                    content: const Text('This will remove the conversation for both users.'),
                     actions: [
                       TextButton(
-                        onPressed: () => Navigator.pop(context, false),
-                        child: const Text('Cancel',
-                            style: TextStyle(color: Colors.grey)),
+                        onPressed: () => Navigator.pop(dialogContext, false),
+                        child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
                       ),
                       TextButton(
-                        onPressed: () => Navigator.pop(context, true),
-                        child: const Text('Delete',
-                            style: TextStyle(color: Colors.red)),
+                        onPressed: () => Navigator.pop(dialogContext, true),
+                        child: const Text('Delete', style: TextStyle(color: Colors.red)),
                       ),
                     ],
                   ),
@@ -548,51 +561,17 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
 
                 if (confirm != true) return;
 
-                // Show loading indicator
-                if (mounted) {
-                  showDialog(
-                    context: context,
-                    barrierDismissible: false,
-                    builder: (_) => const Center(
-                      child: CircularProgressIndicator(),
-                    ),
-                  );
-                }
-
                 try {
-                  // Delete the conversation
                   await _chatService.deleteConversation(widget.conversationId);
-
-                  // Close loading dialog
-                  if (mounted) Navigator.pop(context);
-
-                  // Show success message
                   if (mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('Conversation deleted successfully'),
-                        backgroundColor: Colors.green,
-                      ),
-                    );
-                  }
-
-                  // Navigate back to the previous screen (chat list)
-                  if (mounted) {
-                    // Pop twice to ensure we go back to the chat list
-                    // First pop closes any additional dialogs, second pop goes back
+                    // Pop back to the hub/home — not just one level
                     Navigator.of(context).popUntil((route) => route.isFirst);
-                    // Or if you have a specific route name, you can use:
-                    // Navigator.of(context).pushNamedAndRemoveUntil('/hub', (route) => false);
                   }
                 } catch (e) {
-                  // Close loading dialog
-                  if (mounted) Navigator.pop(context);
-
-                  // Show error message
                   if (mounted) {
                     ScaffoldMessenger.of(context).showSnackBar(
                       SnackBar(
-                        content: Text('Failed to delete conversation: $e'),
+                        content: Text('Failed to delete: $e'),
                         backgroundColor: Colors.red,
                       ),
                     );

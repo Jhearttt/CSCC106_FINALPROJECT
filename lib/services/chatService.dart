@@ -6,12 +6,10 @@ class ChatService {
 
   /// Get the canonical ID for any user (converts to consistent format)
   Future<String> getCanonicalId(String userId) async {
-    // If already in local_ format, return as is
     if (userId.startsWith('local_')) {
       return userId;
     }
 
-    // If it's a Firebase UID, check if there's a local account linked
     try {
       final userDoc = await _db.collection('users').doc(userId).get();
       if (userDoc.exists) {
@@ -25,23 +23,12 @@ class ChatService {
       debugPrint('Error getting canonical ID for $userId: $e');
     }
 
-    // Return original if no local mapping found
     return userId;
   }
 
-  /// Normalize participant IDs for consistent storage
-  Future<List<String>> normalizeParticipants(List<String> participants) async {
-    List<String> normalized = [];
-    for (final participant in participants) {
-      normalized.add(await getCanonicalId(participant));
-    }
-    return normalized;
-  }
-
   Stream<QuerySnapshot> getConversations(String currentUserId) async* {
-    // First, get the canonical ID for the current user
     final canonicalId = await getCanonicalId(currentUserId);
-    debugPrint('🔍 Getting conversations for user: $canonicalId (original: $currentUserId)');
+    debugPrint('🔍 Getting conversations for user: $canonicalId');
 
     yield* _db
         .collection('conversations')
@@ -59,15 +46,11 @@ class ChatService {
     required String otherUserId,
     required String otherUserName,
   }) async {
-    // Get canonical IDs for both users
     final canonicalCurrentId = await getCanonicalId(currentUserId);
     final canonicalOtherId = await getCanonicalId(otherUserId);
 
-    debugPrint('🔍 Creating/finding conversation between:');
-    debugPrint('   Current: $canonicalCurrentId (original: $currentUserId)');
-    debugPrint('   Other: $canonicalOtherId (original: $otherUserId)');
+    debugPrint('🔍 Creating/finding conversation between $canonicalCurrentId and $canonicalOtherId');
 
-    // First, try to find existing conversation using canonical IDs
     final existingConversations = await _db
         .collection('conversations')
         .where('participants', arrayContains: canonicalCurrentId)
@@ -75,9 +58,6 @@ class ChatService {
 
     for (final doc in existingConversations.docs) {
       final participants = List<String>.from(doc['participants']);
-      debugPrint('   Checking conversation ${doc.id}: participants = $participants');
-
-      // Check if other user is in participants (using canonical comparison)
       for (final participant in participants) {
         final participantCanonical = await getCanonicalId(participant);
         if (participantCanonical == canonicalOtherId) {
@@ -87,7 +67,6 @@ class ChatService {
       }
     }
 
-    // Create new conversation with canonical IDs
     debugPrint('🆕 Creating new conversation');
     final participants = [canonicalCurrentId, canonicalOtherId];
     final participantNames = {
@@ -100,6 +79,11 @@ class ChatService {
       'participantNames': participantNames,
       'lastMessage': '',
       'lastMessageTime': FieldValue.serverTimestamp(),
+      'lastMessageSenderId': '',
+      'unreadCounts': {
+        canonicalCurrentId: 0,
+        canonicalOtherId: 0,
+      },
       'createdAt': FieldValue.serverTimestamp(),
     });
 
@@ -113,7 +97,6 @@ class ChatService {
     required String senderName,
     required String text,
   }) async {
-    // Get canonical sender ID
     final canonicalSenderId = await getCanonicalId(senderId);
     debugPrint('📤 Sending message from $canonicalSenderId in conversation $conversationId');
 
@@ -126,13 +109,30 @@ class ChatService {
       'senderId': canonicalSenderId,
       'senderName': senderName,
       'text': text,
+      'isRead': false,
+      'readBy': [],
       'createdAt': FieldValue.serverTimestamp(),
     });
 
-    // Update last message
+    // Get conversation data to update unread counts
+    final convoDoc = await convoRef.get();
+    final convoData = convoDoc.data() as Map<String, dynamic>?;
+    final participants = List<String>.from(convoData?['participants'] ?? []);
+    final unreadCounts = Map<String, int>.from(convoData?['unreadCounts'] ?? {});
+
+    // Increment unread count for all participants except sender
+    for (final participant in participants) {
+      if (participant != canonicalSenderId) {
+        unreadCounts[participant] = (unreadCounts[participant] ?? 0) + 1;
+      }
+    }
+
+    // Update last message and unread counts
     batch.update(convoRef, {
       'lastMessage': text,
       'lastMessageTime': FieldValue.serverTimestamp(),
+      'lastMessageSenderId': canonicalSenderId,
+      'unreadCounts': unreadCounts,
     });
 
     await batch.commit();
@@ -140,11 +140,6 @@ class ChatService {
 
     // Notify recipient
     try {
-      final convoDoc = await convoRef.get();
-      final data = convoDoc.data() as Map<String, dynamic>?;
-      final participants = List<String>.from(data?['participants'] ?? []);
-
-      // Find recipient (the one who isn't the sender)
       String? recipientId;
       for (final participant in participants) {
         if (participant != canonicalSenderId) {
@@ -181,10 +176,61 @@ class ChatService {
         .snapshots();
   }
 
+  Future<void> markMessagesAsRead(String conversationId, String userId) async {
+    try {
+      final canonicalUserId = await getCanonicalId(userId);
+      final convoRef = _db.collection('conversations').doc(conversationId);
+
+      // Get all unread messages in this conversation
+      final messages = await convoRef
+          .collection('messages')
+          .where('isRead', isEqualTo: false)
+          .get();
+
+      final batch = _db.batch();
+
+      // Mark each message as read
+      for (final msgDoc in messages.docs) {
+        final msgData = msgDoc.data();
+        final readBy = List<String>.from(msgData['readBy'] ?? []);
+
+        if (!readBy.contains(canonicalUserId)) {
+          readBy.add(canonicalUserId);
+          batch.update(msgDoc.reference, {
+            'isRead': true,
+            'readBy': readBy,
+          });
+        }
+      }
+
+      // Reset unread count for this user
+      batch.update(convoRef, {
+        'unreadCounts.$canonicalUserId': 0,
+      });
+
+      await batch.commit();
+      debugPrint('✅ Marked messages as read for user $canonicalUserId in conversation $conversationId');
+    } catch (e) {
+      debugPrint('❌ Error marking messages as read: $e');
+    }
+  }
+
+  Future<int> getUnreadCount(String conversationId, String userId) async {
+    try {
+      final canonicalUserId = await getCanonicalId(userId);
+      final convoDoc = await _db.collection('conversations').doc(conversationId).get();
+      final data = convoDoc.data() as Map<String, dynamic>?;
+      final unreadCounts = Map<String, int>.from(data?['unreadCounts'] ?? {});
+      return unreadCounts[canonicalUserId] ?? 0;
+    } catch (e) {
+      debugPrint('❌ Error getting unread count: $e');
+      return 0;
+    }
+  }
+
   Future<void> deleteConversation(String conversationId) async {
     debugPrint('🗑️ Deleting conversation: $conversationId');
 
-    // Also delete all messages in the conversation
     final messagesRef = _db
         .collection('conversations')
         .doc(conversationId)

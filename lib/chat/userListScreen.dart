@@ -52,17 +52,14 @@ class _UserListScreenState extends State<UserListScreen> {
 
   Future<void> _getCurrentUserInfo() async {
     try {
-      // Get current user's canonical ID and email
       if (widget.currentUserId.startsWith('local_')) {
         _currentUserCanonicalId = widget.currentUserId;
         final localId = int.tryParse(widget.currentUserId.replaceFirst('local_', ''));
         if (localId != null) {
           final localUser = await DatabaseHelper().getUserById(localId);
           _currentUserEmail = localUser?['email'];
-          print('📱 Current local user: email=$_currentUserEmail, canonicalId=$_currentUserCanonicalId');
         }
       } else {
-        // This is a Google user
         final doc = await FirebaseFirestore.instance
             .collection('users')
             .doc(widget.currentUserId)
@@ -76,7 +73,6 @@ class _UserListScreenState extends State<UserListScreen> {
           } else {
             _currentUserCanonicalId = widget.currentUserId;
           }
-          print('📱 Current Google user: email=$_currentUserEmail, canonicalId=$_currentUserCanonicalId');
         }
       }
     } catch (e) {
@@ -92,65 +88,43 @@ class _UserListScreenState extends State<UserListScreen> {
           .collection('users')
           .get();
 
-      print('📱 Total users in Firestore: ${usersSnapshot.docs.length}');
-
-      // Use Map to deduplicate by email (most reliable)
       final Map<String, Map<String, dynamic>> userMap = {};
 
       for (final doc in usersSnapshot.docs) {
         final data = doc.data();
         final email = data['email'] as String?;
         final localId = data['localId'];
+        final displayName = data['displayName'] as String? ?? '';
 
-        print('📱 User: email=$email, localId=$localId, docId=${doc.id}');
+        if (email == null || email.isEmpty) continue;
+        if (email == _currentUserEmail) continue;
 
-        // Skip if no email
-        if (email == null || email.isEmpty) {
-          print('⚠️ Skipping user with no email: ${doc.id}');
-          continue;
-        }
-
-        // Skip current user
-        if (email == _currentUserEmail) {
-          print('⚠️ Skipping current user: $email');
-          continue;
-        }
-
-        // Use email as the unique key
         if (!userMap.containsKey(email)) {
-          // Get the best name available
-          String name = data['displayName'] ?? '';
+          String name = displayName;
           if (name.isEmpty) {
-            name = data['userName'] ?? email.split('@')[0];
+            name = email.split('@')[0];
           }
 
-          // Create canonical ID
           String canonicalId;
-          if (localId != null && localId is int) {
+          if (localId != null) {
             canonicalId = 'local_$localId';
           } else {
             canonicalId = doc.id;
           }
 
-          // Store user data
           userMap[email] = {
             'id': doc.id,
             'canonicalId': canonicalId,
             'name': name,
             'email': email,
-            'photoUrl': data['photoUrl'] ?? '',
+            'photoUrl': data['photoUrl'],
             'localId': localId,
           };
-
-          print('✅ Added user: $name ($email) with canonicalId: $canonicalId');
         }
       }
 
-      // Convert map to list and sort by name
       List<Map<String, dynamic>> userList = userMap.values.toList();
       userList.sort((a, b) => a['name'].toLowerCase().compareTo(b['name'].toLowerCase()));
-
-      print('📱 Final unique users count: ${userList.length}');
 
       if (mounted) {
         setState(() {
@@ -159,34 +133,73 @@ class _UserListScreenState extends State<UserListScreen> {
         });
       }
     } catch (e) {
-      print('❌ Error loading users: $e');
-      if (mounted) {
-        setState(() => _isLoading = false);
-      }
+      debugPrint('Error loading users: $e');
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
   Future<void> _openChat(String canonicalOtherId, String otherUserName) async {
-    final convoId = await _chatService.getOrCreateConversation(
-      currentUserId: _currentUserCanonicalId ?? widget.currentUserId,
-      currentUserName: widget.currentUserName,
-      otherUserId: canonicalOtherId,
-      otherUserName: otherUserName,
-    );
+    debugPrint('🟢 OPENING CHAT WITH: $otherUserName (ID: $canonicalOtherId)');
+    debugPrint('🟢 CURRENT USER: ${widget.currentUserName} (ID: ${widget.currentUserId})');
+    debugPrint('🟢 CURRENT CANONICAL: $_currentUserCanonicalId');
 
-    if (mounted) {
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(
-          builder: (_) => ChatRoomScreen(
-            conversationId: convoId,
-            currentUserId: _currentUserCanonicalId ?? widget.currentUserId,
-            currentUserName: widget.currentUserName,
-            otherPersonName: otherUserName,
-            otherPersonId: canonicalOtherId,
-          ),
-        ),
+    // Make sure we have valid IDs
+    if (canonicalOtherId.isEmpty) {
+      debugPrint('❌ ERROR: otherUserId is empty!');
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Error: Invalid user selected')),
       );
+      return;
+    }
+
+    if (_currentUserCanonicalId == null || _currentUserCanonicalId!.isEmpty) {
+      debugPrint('❌ ERROR: currentUserCanonicalId is empty!');
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Error: Please logout and login again')),
+      );
+      return;
+    }
+
+    // Check if trying to chat with self
+    if (_currentUserCanonicalId == canonicalOtherId) {
+      debugPrint('❌ ERROR: Trying to chat with yourself!');
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('You cannot chat with yourself')),
+      );
+      return;
+    }
+
+    try {
+      final convoId = await _chatService.getOrCreateConversation(
+        currentUserId: _currentUserCanonicalId!,
+        currentUserName: widget.currentUserName,
+        otherUserId: canonicalOtherId,
+        otherUserName: otherUserName,
+      );
+
+      debugPrint('🟢 CONVERSATION ID: $convoId');
+
+      if (mounted) {
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(
+            builder: (_) => ChatRoomScreen(
+              conversationId: convoId,
+              currentUserId: _currentUserCanonicalId!,
+              currentUserName: widget.currentUserName,
+              otherPersonName: otherUserName,
+              otherPersonId: canonicalOtherId,
+            ),
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint('❌ Error creating conversation: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e')),
+        );
+      }
     }
   }
 
@@ -209,16 +222,9 @@ class _UserListScreenState extends State<UserListScreen> {
       elevation: 0,
       backgroundColor: Colors.white,
       foregroundColor: _kInk,
-      title: const Text(
-        'New Message',
-        style: TextStyle(fontWeight: FontWeight.bold),
-      ),
+      title: const Text('New Message', style: TextStyle(fontWeight: FontWeight.bold)),
       actions: [
-        IconButton(
-          icon: const Icon(Icons.refresh),
-          onPressed: _loadUniqueUsers,
-          tooltip: 'Refresh',
-        ),
+        IconButton(icon: const Icon(Icons.refresh), onPressed: _loadUniqueUsers),
       ],
     );
   }
@@ -261,7 +267,6 @@ class _UserListScreenState extends State<UserListScreen> {
       return const Center(child: CircularProgressIndicator());
     }
 
-    // Filter users based on search query
     List<Map<String, dynamic>> filteredUsers = _uniqueUsers;
 
     if (_searchQuery.isNotEmpty) {
@@ -281,8 +286,7 @@ class _UserListScreenState extends State<UserListScreen> {
       child: ListView.separated(
         padding: const EdgeInsets.symmetric(vertical: 8),
         itemCount: filteredUsers.length,
-        separatorBuilder: (_, __) =>
-            Divider(height: 1, indent: 72, color: Colors.grey.shade100),
+        separatorBuilder: (_, __) => Divider(height: 1, indent: 72, color: Colors.grey.shade100),
         itemBuilder: (context, i) {
           final user = filteredUsers[i];
           return _UserTile(
@@ -296,34 +300,23 @@ class _UserListScreenState extends State<UserListScreen> {
     );
   }
 
-  // ADD THIS MISSING METHOD
   Widget _buildEmptyState() {
     return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
           Container(
-            width: 72,
-            height: 72,
-            decoration: BoxDecoration(
-              color: _kAccent.withOpacity(0.08),
-              shape: BoxShape.circle,
-            ),
+            width: 72, height: 72,
+            decoration: BoxDecoration(color: _kAccent.withOpacity(0.08), shape: BoxShape.circle),
             child: const Icon(Icons.people_outline_rounded, size: 32, color: _kAccent),
           ),
           const SizedBox(height: 14),
           Text(
-            _searchQuery.isNotEmpty
-                ? 'No users found for "$_searchQuery"'
-                : 'No other users registered yet',
+            _searchQuery.isNotEmpty ? 'No users found for "$_searchQuery"' : 'No other users registered yet',
             style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: _kInk),
           ),
           const SizedBox(height: 6),
-          const Text(
-            'Users will appear here once they register',
-            textAlign: TextAlign.center,
-            style: TextStyle(color: Colors.grey, fontSize: 13),
-          ),
+          const Text('Users will appear here once they register', textAlign: TextAlign.center, style: TextStyle(color: Colors.grey, fontSize: 13)),
         ],
       ),
     );
@@ -336,38 +329,19 @@ class _UserTile extends StatelessWidget {
   final String email;
   final VoidCallback onTap;
 
-  const _UserTile({
-    required this.userId,
-    required this.name,
-    required this.email,
-    required this.onTap,
-  });
+  const _UserTile({required this.userId, required this.name, required this.email, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
     return ListTile(
       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
       leading: _UserListAvatar(userId: userId, name: name),
-      title: Text(
-        name,
-        style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15, color: _kInk),
-        overflow: TextOverflow.ellipsis,
-      ),
-      subtitle: Text(
-        email,
-        style: const TextStyle(fontSize: 12, color: Colors.grey),
-        overflow: TextOverflow.ellipsis,
-      ),
+      title: Text(name, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15, color: _kInk)),
+      subtitle: Text(email, style: const TextStyle(fontSize: 12, color: Colors.grey)),
       trailing: Container(
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-        decoration: BoxDecoration(
-          color: _kAccent.withOpacity(0.08),
-          borderRadius: BorderRadius.circular(20),
-        ),
-        child: const Text(
-          'Message',
-          style: TextStyle(fontSize: 12, color: _kAccent, fontWeight: FontWeight.w600),
-        ),
+        decoration: BoxDecoration(color: _kAccent.withOpacity(0.08), borderRadius: BorderRadius.circular(20)),
+        child: const Text('Message', style: TextStyle(fontSize: 12, color: _kAccent, fontWeight: FontWeight.w600)),
       ),
       onTap: onTap,
     );
@@ -377,7 +351,6 @@ class _UserTile extends StatelessWidget {
 class _UserListAvatar extends StatefulWidget {
   final String userId;
   final String name;
-
   const _UserListAvatar({required this.userId, required this.name});
 
   @override
@@ -396,41 +369,29 @@ class _UserListAvatarState extends State<_UserListAvatar> {
 
   Future<void> _loadPhoto() async {
     try {
-      final doc = await FirebaseFirestore.instance
-          .collection('users')
-          .doc(widget.userId)
-          .get();
-
+      final doc = await FirebaseFirestore.instance.collection('users').doc(widget.userId).get();
       if (doc.exists) {
         final data = doc.data()!;
         final photoUrl = data['photoUrl'] as String?;
         final localId = data['localId'] as int?;
-
-        String? base64pic;
-        String? urlPic;
 
         if (localId != null) {
           final localUser = await DatabaseHelper().getUserById(localId);
           final pic = localUser?['profilePic'] as String?;
           if (pic != null && pic.isNotEmpty) {
             if (pic.startsWith('http')) {
-              urlPic = pic;
+              _photoUrl = pic;
             } else {
-              base64pic = pic;
+              _photoBase64 = pic;
             }
           }
         }
 
-        if (urlPic == null && photoUrl != null && photoUrl.isNotEmpty) {
-          urlPic = photoUrl;
+        if (_photoUrl == null && photoUrl != null && photoUrl.isNotEmpty) {
+          _photoUrl = photoUrl;
         }
 
-        if (mounted) {
-          setState(() {
-            _photoUrl = urlPic;
-            _photoBase64 = base64pic;
-          });
-        }
+        if (mounted) setState(() {});
       }
     } catch (e) {
       debugPrint('Avatar load error: $e');
@@ -443,26 +404,18 @@ class _UserListAvatarState extends State<_UserListAvatar> {
 
     if (_photoBase64 != null && _photoBase64!.isNotEmpty) {
       try {
-        final bytes = base64Decode(_photoBase64!);
-        return CircleAvatar(radius: 24, backgroundImage: MemoryImage(bytes));
+        return CircleAvatar(radius: 24, backgroundImage: MemoryImage(base64Decode(_photoBase64!)));
       } catch (_) {}
     }
 
     if (_photoUrl != null && _photoUrl!.isNotEmpty) {
-      return CircleAvatar(
-        radius: 24,
-        backgroundImage: NetworkImage(_photoUrl!),
-        onBackgroundImageError: (_, __) {},
-      );
+      return CircleAvatar(radius: 24, backgroundImage: NetworkImage(_photoUrl!));
     }
 
     return CircleAvatar(
       radius: 24,
       backgroundColor: _kAccent.withOpacity(0.12),
-      child: Text(
-        initials,
-        style: const TextStyle(color: _kAccent, fontWeight: FontWeight.bold, fontSize: 16),
-      ),
+      child: Text(initials, style: const TextStyle(color: _kAccent, fontWeight: FontWeight.bold, fontSize: 16)),
     );
   }
 }

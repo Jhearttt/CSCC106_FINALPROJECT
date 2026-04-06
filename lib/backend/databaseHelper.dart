@@ -45,6 +45,16 @@ class DatabaseHelper {
     }
   }
 
+  Future<void> updateUserProfilePicture(int userId, String base64Image) async {
+    final db = await _database();
+    await db.update(
+      'users',
+      {'profilePic': base64Image},
+      where: 'id = ?',
+      whereArgs: [userId],
+    );
+  }
+
   Database? _db;
 
   Future<Database> getDatabase() => _database();
