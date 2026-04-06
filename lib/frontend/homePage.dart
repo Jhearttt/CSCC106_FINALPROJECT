@@ -93,7 +93,6 @@ class _HomePageHomeState extends State<HomePageHome>
     super.initState();
     _user = FirebaseAuth.instance.currentUser;
     _loadLocalUserName();
-    _initNotifBadge();
     DatabaseHelper.profilePicVersion.addListener(_loadLocalUserName);
     _screens = [
       DashboardHome(localUserId: widget.localUserId),
@@ -102,7 +101,6 @@ class _HomePageHomeState extends State<HomePageHome>
       ProfileScreen(
         localUserId: widget.localUserId,
         embeddedMode: true,
-        tabNotifier: _profileTabNotifier,
       ),
       null, // ← Hub always built fresh in body
     ];
@@ -139,46 +137,7 @@ class _HomePageHomeState extends State<HomePageHome>
     setState(() => _tab = index);
   }
 
-  void _initNotifBadge() {
-    final db = FirebaseFirestore.instance;
-    final uid = _user?.uid;
-    final localId = widget.localUserId;
 
-    if (uid != null) {
-      _notifSubs.add(
-        db
-            .collection('notifications')
-            .where('userId', isEqualTo: uid)
-            .where('isRead', isEqualTo: false)
-            .snapshots()
-            .listen((snap) {
-              if (!mounted) return;
-              _remoteUidUnread = snap.docs.isNotEmpty;
-              setState(
-                () => _hasUnread = _remoteUidUnread || _remoteLocalUnread,
-              );
-            }),
-      );
-    }
-
-    if (localId != null) {
-      _notifSubs.add(
-        db
-            .collection('notifications')
-            .where('userId', isEqualTo: 'local_$localId')
-            .where('isRead', isEqualTo: false)
-            .snapshots()
-            .listen((snap) {
-              if (!mounted) return;
-              _remoteLocalUnread = snap.docs.isNotEmpty;
-              setState(
-                () => _hasUnread = _remoteUidUnread || _remoteLocalUnread,
-              );
-            }),
-      );
-      _recheckLocalUnread();
-    }
-  }
 
   Future<void> _recheckLocalUnread() async {
     if (widget.localUserId == null) return;
@@ -191,17 +150,7 @@ class _HomePageHomeState extends State<HomePageHome>
     );
   }
 
-  void _openNotifications() {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => NotificationsScreen(
-          localUserId: widget.localUserId,
-          firebaseUserId: _user?.uid,
-        ),
-      ),
-    ).then((_) => _recheckLocalUnread());
-  }
+  
 
   @override
   void dispose() {
@@ -307,15 +256,7 @@ class _HomePageHomeState extends State<HomePageHome>
                   ),
                 ),
                 const SizedBox(width: 8),
-                GestureDetector(
-                  onTap: _openNotifications,
-                  child: _glassBtn(
-                    icon: Icons.notifications_rounded,
-                    badge: _hasUnread,
-                  ),
-                ),
-                const SizedBox(width: 8),
-
+  
                 Container(
                   width: 38,
                   height: 38,
@@ -648,16 +589,7 @@ class _HomePageHomeState extends State<HomePageHome>
                   ),
                 ),
 
-                _drawerTile(
-                  Icons.notifications_rounded,
-                  "Notifications",
-                  kAmberSoft,
-                  const Color(0xFFD97706),
-                  () {
-                    Navigator.pop(context);
-                    _openNotifications();
-                  },
-                ),
+                
 
                 _drawerTile(
                   Icons.emoji_events_rounded,
@@ -966,7 +898,6 @@ class _HomePageHomeState extends State<HomePageHome>
                           const Color(0xFFD97706),
                         ),
                         _featurePill("💬 Threads", kSkySoft, kSky),
-                        _featurePill("🔔 Notifications", kMintSoft, kMint),
                         _featurePill("🏆 Leaderboard", kBlushSoft, kBlush),
                       ],
                     ),
