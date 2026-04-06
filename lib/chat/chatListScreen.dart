@@ -5,10 +5,9 @@ import 'package:final_project/services/chatService.dart';
 import 'chatRoomScreen.dart';
 import 'package:final_project/backend/databaseHelper.dart';
 
-
 const _kAccent = Color(0xFF6366F1);
-const _kInk    = Color(0xFF1E1B4B);
-const _kBg     = Color(0xFFF8FAFC);
+const _kInk = Color(0xFF1E1B4B);
+const _kBg = Color(0xFFF8FAFC);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Avatar widget
@@ -57,9 +56,9 @@ class _ConvoAvatarState extends State<ConvoAvatar> {
       }
 
       if (doc.exists) {
-        final data     = doc.data()!;
+        final data = doc.data()!;
         final photoUrl = data['photoUrl'] as String?;
-        final localId  = data['localId']  as int?;
+        final localId = data['localId'] as int?;
 
         String? base64;
         if (localId != null) {
@@ -70,7 +69,9 @@ class _ConvoAvatarState extends State<ConvoAvatar> {
 
         if (mounted) {
           setState(() {
-            _photoUrl    = (photoUrl != null && photoUrl.isNotEmpty) ? photoUrl : null;
+            _photoUrl = (photoUrl != null && photoUrl.isNotEmpty)
+                ? photoUrl
+                : null;
             _photoBase64 = base64;
           });
         }
@@ -89,8 +90,9 @@ class _ConvoAvatarState extends State<ConvoAvatar> {
     if (_photoBase64 != null && _photoBase64!.isNotEmpty) {
       try {
         return CircleAvatar(
-            radius: widget.radius,
-            backgroundImage: MemoryImage(base64Decode(_photoBase64!)));
+          radius: widget.radius,
+          backgroundImage: MemoryImage(base64Decode(_photoBase64!)),
+        );
       } catch (_) {}
     }
 
@@ -108,9 +110,10 @@ class _ConvoAvatarState extends State<ConvoAvatar> {
       child: Text(
         initials,
         style: TextStyle(
-            color: _kAccent,
-            fontWeight: FontWeight.bold,
-            fontSize: widget.radius * 0.6),
+          color: _kAccent,
+          fontWeight: FontWeight.bold,
+          fontSize: widget.radius * 0.6,
+        ),
       ),
     );
   }
@@ -134,9 +137,21 @@ class ChatListScreen extends StatefulWidget {
 }
 
 class _ChatListScreenState extends State<ChatListScreen> {
-  final _chatService      = ChatService();
+  final _chatService = ChatService();
   final _searchController = TextEditingController();
-  String _searchQuery     = '';
+  String _searchQuery = '';
+  String _myCanonicalId = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _chatService.getCanonicalId(widget.currentUserId).then((id) {
+      if (mounted) setState(() => _myCanonicalId = id);
+    });
+  }
+
+  String get _effectiveMyId =>
+      _myCanonicalId.isNotEmpty ? _myCanonicalId : widget.currentUserId;
 
   @override
   void dispose() {
@@ -151,7 +166,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
     // Both IDs must have the same format (both with local_ prefix or both without)
     final id1HasLocal = id1.startsWith('local_');
     final id2HasLocal = id2.startsWith('local_');
-    
+
     if (id1HasLocal != id2HasLocal) return false;
 
     // Extract numeric IDs only if both have the same format
@@ -164,11 +179,12 @@ class _ChatListScreenState extends State<ChatListScreen> {
   // ── Get other participant's name ──────────────────────────────────────────
   String _getOtherPersonName(Map<String, dynamic> data) {
     final participants = List<String>.from(data['participants'] ?? []);
-    final participantNames = Map<String, String>.from(data['participantNames'] ?? {});
+    final participantNames = Map<String, String>.from(
+      data['participantNames'] ?? {},
+    );
 
-    // Find the participant that is NOT the current user
     for (final participant in participants) {
-      if (!_isSameUser(participant, widget.currentUserId)) {
+      if (!_isSameUser(participant, _effectiveMyId)) {
         // This is the other person
         if (participantNames.containsKey(participant)) {
           return participantNames[participant]!;
@@ -189,7 +205,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
     final participants = List<String>.from(data['participants'] ?? []);
 
     for (final participant in participants) {
-      if (!_isSameUser(participant, widget.currentUserId)) {
+      if (!_isSameUser(participant, _effectiveMyId)) {
         return participant;
       }
     }
@@ -200,21 +216,23 @@ class _ChatListScreenState extends State<ChatListScreen> {
   // ── Format timestamp ───────────────────────────────────────────────────────
   String _formatTime(Timestamp? timestamp) {
     if (timestamp == null) return '';
-    final dt   = timestamp.toDate();
+    final dt = timestamp.toDate();
     final diff = DateTime.now().difference(dt);
     if (diff.inSeconds < 60) return 'now';
     if (diff.inMinutes < 60) return '${diff.inMinutes}m';
-    if (diff.inHours   < 24) return '${diff.inHours}h';
-    if (diff.inDays    <  7) return '${diff.inDays}d';
+    if (diff.inHours < 24) return '${diff.inHours}h';
+    if (diff.inDays < 7) return '${diff.inDays}d';
     return '${dt.day}/${dt.month}';
   }
 
   @override
   Widget build(BuildContext context) {
-    return Column(children: [
-      _buildSearchBar(),
-      Expanded(child: _buildConversationList()),
-    ]);
+    return Column(
+      children: [
+        _buildSearchBar(),
+        Expanded(child: _buildConversationList()),
+      ],
+    );
   }
 
   // ── Search bar ─────────────────────────────────────────────────────────────
@@ -228,17 +246,23 @@ class _ChatListScreenState extends State<ChatListScreen> {
         decoration: InputDecoration(
           hintText: 'Search conversations...',
           hintStyle: const TextStyle(color: Colors.grey, fontSize: 14),
-          prefixIcon: const Icon(Icons.search_rounded,
-              color: Colors.grey, size: 20),
+          prefixIcon: const Icon(
+            Icons.search_rounded,
+            color: Colors.grey,
+            size: 20,
+          ),
           suffixIcon: _searchQuery.isNotEmpty
               ? GestureDetector(
-            onTap: () {
-              _searchController.clear();
-              setState(() => _searchQuery = '');
-            },
-            child: const Icon(Icons.close_rounded,
-                color: Colors.grey, size: 18),
-          )
+                  onTap: () {
+                    _searchController.clear();
+                    setState(() => _searchQuery = '');
+                  },
+                  child: const Icon(
+                    Icons.close_rounded,
+                    color: Colors.grey,
+                    size: 18,
+                  ),
+                )
               : null,
           filled: true,
           fillColor: _kBg,
@@ -263,8 +287,10 @@ class _ChatListScreenState extends State<ChatListScreen> {
 
         if (snapshot.hasError) {
           return Center(
-            child: Text('Error: ${snapshot.error}',
-                style: const TextStyle(color: Colors.red)),
+            child: Text(
+              'Error: ${snapshot.error}',
+              style: const TextStyle(color: Colors.red),
+            ),
           );
         }
 
@@ -320,8 +346,10 @@ class _ChatListScreenState extends State<ChatListScreen> {
             final otherUserId = _getOtherPersonId(data);
             final lastMessage = data['lastMessage'] ?? '';
             final lastTime = data['lastMessageTime'] as Timestamp?;
-            final unreadCounts = Map<String, int>.from(data['unreadCounts'] ?? {});
-            final unreadCount = unreadCounts[widget.currentUserId] ?? 0;
+            final unreadCounts = Map<String, int>.from(
+              data['unreadCounts'] ?? {},
+            );
+            final unreadCount = unreadCounts[_effectiveMyId] ?? 0;
 
             return _ConversationTile(
               key: ValueKey(convoId),
@@ -334,7 +362,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
               currentUserId: widget.currentUserId,
               currentUserName: widget.currentUserName,
               onDelete: () => _confirmDelete(convoId),
-              chatService: _chatService,  // Add this line
+              chatService: _chatService, // Add this line
             );
           },
         );
@@ -345,22 +373,38 @@ class _ChatListScreenState extends State<ChatListScreen> {
   // ── Empty state ────────────────────────────────────────────────────────────
   Widget _buildEmptyState() {
     return Center(
-      child: Column(mainAxisSize: MainAxisSize.min, children: [
-        Container(
-          width: 80, height: 80,
-          decoration: BoxDecoration(
-              color: _kAccent.withOpacity(0.08), shape: BoxShape.circle),
-          child: const Icon(Icons.chat_bubble_outline_rounded,
-              size: 36, color: _kAccent),
-        ),
-        const SizedBox(height: 16),
-        const Text('No messages yet',
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 80,
+            height: 80,
+            decoration: BoxDecoration(
+              color: _kAccent.withOpacity(0.08),
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(
+              Icons.chat_bubble_outline_rounded,
+              size: 36,
+              color: _kAccent,
+            ),
+          ),
+          const SizedBox(height: 16),
+          const Text(
+            'No messages yet',
             style: TextStyle(
-                fontSize: 16, fontWeight: FontWeight.w700, color: _kInk)),
-        const SizedBox(height: 6),
-        const Text('Tap the pencil icon to start a conversation',
-            style: TextStyle(color: Colors.grey, fontSize: 13)),
-      ]),
+              fontSize: 16,
+              fontWeight: FontWeight.w700,
+              color: _kInk,
+            ),
+          ),
+          const SizedBox(height: 6),
+          const Text(
+            'Tap the pencil icon to start a conversation',
+            style: TextStyle(color: Colors.grey, fontSize: 13),
+          ),
+        ],
+      ),
     );
   }
 
@@ -369,16 +413,16 @@ class _ChatListScreenState extends State<ChatListScreen> {
     showDialog(
       context: context,
       builder: (_) => AlertDialog(
-        shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(16)),
-        title: const Text('Delete conversation?',
-            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text(
+          'Delete conversation?',
+          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+        ),
         content: const Text('This will remove the conversation.'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel',
-                style: TextStyle(color: Colors.grey)),
+            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
           ),
           TextButton(
             onPressed: () async {
@@ -390,8 +434,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
                 );
               }
             },
-            child: const Text('Delete',
-                style: TextStyle(color: Colors.red)),
+            child: const Text('Delete', style: TextStyle(color: Colors.red)),
           ),
         ],
       ),
@@ -403,16 +446,16 @@ class _ChatListScreenState extends State<ChatListScreen> {
 // Conversation Tile
 // ─────────────────────────────────────────────────────────────────────────────
 class _ConversationTile extends StatelessWidget {
-  final String       conversationId;
-  final String       otherPersonName;
-  final String       otherPersonId;
-  final String       lastMessage;
-  final String       timeLabel;
-  final int          unreadCount;
-  final String       currentUserId;
-  final String       currentUserName;
+  final String conversationId;
+  final String otherPersonName;
+  final String otherPersonId;
+  final String lastMessage;
+  final String timeLabel;
+  final int unreadCount;
+  final String currentUserId;
+  final String currentUserName;
   final VoidCallback onDelete;
-  final ChatService  chatService;
+  final ChatService chatService;
 
   const _ConversationTile({
     super.key,
@@ -437,21 +480,23 @@ class _ConversationTile extends StatelessWidget {
         alignment: Alignment.centerRight,
         padding: const EdgeInsets.only(right: 20),
         color: Colors.red.shade50,
-        child: const Icon(Icons.delete_outline_rounded,
-            color: Colors.red, size: 24),
+        child: const Icon(
+          Icons.delete_outline_rounded,
+          color: Colors.red,
+          size: 24,
+        ),
       ),
       confirmDismiss: (_) async {
         onDelete();
         return false;
       },
       child: ListTile(
-        contentPadding:
-        const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
         leading: Stack(
           clipBehavior: Clip.none,
           children: [
             ConvoAvatar(
-              otherPersonId:   otherPersonId,
+              otherPersonId: otherPersonId,
               otherPersonName: otherPersonName,
             ),
             if (unreadCount > 0)
@@ -482,27 +527,33 @@ class _ConversationTile extends StatelessWidget {
               ),
           ],
         ),
-        title: Row(children: [
-          Expanded(
-            child: Text(
-              otherPersonName,
-              style: TextStyle(
-                fontWeight: unreadCount > 0 ? FontWeight.w800 : FontWeight.w600,
-                fontSize: 15,
-                color: _kInk,
+        title: Row(
+          children: [
+            Expanded(
+              child: Text(
+                otherPersonName,
+                style: TextStyle(
+                  fontWeight: unreadCount > 0
+                      ? FontWeight.w800
+                      : FontWeight.w600,
+                  fontSize: 15,
+                  color: _kInk,
+                ),
+                overflow: TextOverflow.ellipsis,
               ),
-              overflow: TextOverflow.ellipsis,
             ),
-          ),
-          Text(
-            timeLabel,
-            style: TextStyle(
-              fontSize: 11,
-              color: unreadCount > 0 ? _kAccent : Colors.grey,
-              fontWeight: unreadCount > 0 ? FontWeight.w600 : FontWeight.normal,
+            Text(
+              timeLabel,
+              style: TextStyle(
+                fontSize: 11,
+                color: unreadCount > 0 ? _kAccent : Colors.grey,
+                fontWeight: unreadCount > 0
+                    ? FontWeight.w600
+                    : FontWeight.normal,
+              ),
             ),
-          ),
-        ]),
+          ],
+        ),
         subtitle: Padding(
           padding: const EdgeInsets.only(top: 3),
           child: Row(
@@ -522,7 +573,9 @@ class _ConversationTile extends StatelessWidget {
                   lastMessage.isEmpty ? 'No messages yet' : lastMessage,
                   style: TextStyle(
                     fontSize: 13,
-                    fontWeight: unreadCount > 0 ? FontWeight.w600 : FontWeight.normal,
+                    fontWeight: unreadCount > 0
+                        ? FontWeight.w600
+                        : FontWeight.normal,
                     color: unreadCount > 0 ? _kInk : Colors.grey.shade600,
                   ),
                   overflow: TextOverflow.ellipsis,
@@ -541,11 +594,11 @@ class _ConversationTile extends StatelessWidget {
               context,
               MaterialPageRoute(
                 builder: (_) => ChatRoomScreen(
-                  conversationId:  conversationId,
-                  currentUserId:   currentUserId,
+                  conversationId: conversationId,
+                  currentUserId: currentUserId,
                   currentUserName: currentUserName,
                   otherPersonName: otherPersonName,
-                  otherPersonId:   otherPersonId,
+                  otherPersonId: otherPersonId,
                 ),
               ),
             );
