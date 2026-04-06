@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:final_project/backend/databaseHelper.dart';
 import 'package:final_project/frontend/communityFeedScreen.dart';
@@ -73,6 +74,7 @@ class _HomePageHomeState extends State<HomePageHome>
   int _tab = _tabDashboard;
   User? _user;
   String _localUserName = 'User';
+  String? _localProfilePic;
 
   // Screens for tab indices 0, 1, 3 — Create Post (index 2) is launched modally
   late final List<Widget?> _screens;
@@ -92,6 +94,7 @@ class _HomePageHomeState extends State<HomePageHome>
     _user = FirebaseAuth.instance.currentUser;
     _loadLocalUserName();
     _initNotifBadge();
+    DatabaseHelper.profilePicVersion.addListener(_loadLocalUserName);
     _screens = [
       DashboardHome(localUserId: widget.localUserId),
       CommunityFeedScreen(localUserId: widget.localUserId),
@@ -112,6 +115,7 @@ class _HomePageHomeState extends State<HomePageHome>
       if (user != null && mounted) {
         setState(() {
           _localUserName = user['fullName'] ?? user['userName'] ?? 'User';
+          _localProfilePic = user['profilePic'] as String?;
         });
       }
     }
@@ -201,6 +205,7 @@ class _HomePageHomeState extends State<HomePageHome>
 
   @override
   void dispose() {
+    DatabaseHelper.profilePicVersion.removeListener(_loadLocalUserName);
     for (final sub in _notifSubs) sub.cancel();
     _profileTabNotifier.dispose();
     super.dispose();
@@ -325,19 +330,32 @@ class _HomePageHomeState extends State<HomePageHome>
                       ),
                     ],
                   ),
-                  child: _user?.photoURL != null
-                      ? ClipRRect(
-                          borderRadius: BorderRadius.circular(11),
-                          child: Image.network(
-                            _user!.photoURL!,
-                            fit: BoxFit.cover,
-                          ),
-                        )
-                      : const Icon(
-                          Icons.person_rounded,
-                          color: Colors.white,
-                          size: 18,
-                        ),
+                  child: () {
+                    final pic = _localProfilePic;
+                    ImageProvider? provider;
+                    if (pic != null && pic.isNotEmpty) {
+                      if (pic.startsWith('http')) {
+                        provider = NetworkImage(pic);
+                      } else {
+                        try {
+                          provider = MemoryImage(base64Decode(pic));
+                        } catch (_) {}
+                      }
+                    } else if (_user?.photoURL != null) {
+                      provider = NetworkImage(_user!.photoURL!);
+                    }
+                    if (provider != null) {
+                      return ClipRRect(
+                        borderRadius: BorderRadius.circular(11),
+                        child: Image(image: provider, fit: BoxFit.cover),
+                      );
+                    }
+                    return const Icon(
+                      Icons.person_rounded,
+                      color: Colors.white,
+                      size: 18,
+                    );
+                  }(),
                 ),
               ],
             ),
