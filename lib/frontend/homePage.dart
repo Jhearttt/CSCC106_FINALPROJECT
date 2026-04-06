@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:final_project/backend/databaseHelper.dart';
 import 'package:final_project/frontend/communityFeedScreen.dart';
 import 'package:final_project/frontend/createPostScreen.dart';
@@ -77,11 +79,17 @@ class _HomePageHomeState extends State<HomePageHome>
   /// 0 = My Posts, 1 = Skill Cards
   final _profileTabNotifier = ValueNotifier<int>(0);
 
+  bool _hasUnread        = false;
+  bool _remoteUidUnread  = false;
+  bool _remoteLocalUnread = false;
+  final List<StreamSubscription<QuerySnapshot>> _notifSubs = [];
+
   @override
   void initState() {
     super.initState();
     _user = FirebaseAuth.instance.currentUser;
     _loadLocalUserName();
+    _initNotifBadge();
     _screens = [
       DashboardHome(localUserId: widget.localUserId),
       CommunityFeedScreen(localUserId: widget.localUserId),
@@ -121,8 +129,64 @@ class _HomePageHomeState extends State<HomePageHome>
     setState(() => _tab = index);
   }
 
+  void _initNotifBadge() {
+    final db      = FirebaseFirestore.instance;
+    final uid     = _user?.uid;
+    final localId = widget.localUserId;
+
+    if (uid != null) {
+      _notifSubs.add(
+        db.collection('notifications')
+            .where('userId', isEqualTo: uid)
+            .where('isRead', isEqualTo: false)
+            .snapshots()
+            .listen((snap) {
+          if (!mounted) return;
+          _remoteUidUnread = snap.docs.isNotEmpty;
+          setState(() => _hasUnread = _remoteUidUnread || _remoteLocalUnread);
+        }),
+      );
+    }
+
+    if (localId != null) {
+      _notifSubs.add(
+        db.collection('notifications')
+            .where('userId', isEqualTo: 'local_$localId')
+            .where('isRead', isEqualTo: false)
+            .snapshots()
+            .listen((snap) {
+          if (!mounted) return;
+          _remoteLocalUnread = snap.docs.isNotEmpty;
+          setState(() => _hasUnread = _remoteUidUnread || _remoteLocalUnread);
+        }),
+      );
+      _recheckLocalUnread();
+    }
+  }
+
+  Future<void> _recheckLocalUnread() async {
+    if (widget.localUserId == null) return;
+    final count = await DatabaseHelper()
+        .getUnreadNotificationCount(widget.localUserId!);
+    if (!mounted) return;
+    setState(() => _hasUnread = _remoteUidUnread || _remoteLocalUnread || count > 0);
+  }
+
+  void _openNotifications() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => NotificationsScreen(
+          localUserId:    widget.localUserId,
+          firebaseUserId: _user?.uid,
+        ),
+      ),
+    ).then((_) => _recheckLocalUnread());
+  }
+
   @override
   void dispose() {
+    for (final sub in _notifSubs) sub.cancel();
     _profileTabNotifier.dispose();
     super.dispose();
   }
@@ -193,6 +257,14 @@ class _HomePageHomeState extends State<HomePageHome>
                 child: Text(_tabLabel(_tab), style: const TextStyle(
                     color: kViolet, fontSize: 11,
                     fontWeight: FontWeight.w700, letterSpacing: 0.2)),
+              ),
+              const SizedBox(width: 8),
+              GestureDetector(
+                onTap: _openNotifications,
+                child: _glassBtn(
+                  icon: Icons.notifications_rounded,
+                  badge: _hasUnread,
+                ),
               ),
               const SizedBox(width: 8),
 
@@ -408,13 +480,7 @@ class _HomePageHomeState extends State<HomePageHome>
                 Icons.notifications_rounded, "Notifications",
                 kAmberSoft, const Color(0xFFD97706), () {
               Navigator.pop(context);
-              Navigator.push(context, MaterialPageRoute(
-                  builder: (_) => NotificationsScreen(
-                    localUserId:     widget.localUserId,
-                    firebaseUserId:  _user?.uid,
-                  )
-              )
-              );
+              _openNotifications();
             }),
 
             _drawerTile(
