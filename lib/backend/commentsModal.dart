@@ -1,6 +1,9 @@
 import 'dart:async';
 import 'package:awesome_dialog/awesome_dialog.dart';
 import 'package:final_project/backend/databaseHelper.dart';
+import 'package:final_project/chat/chatRoomScreen.dart';
+import 'package:final_project/frontend/profileScreen.dart';
+import 'package:final_project/services/chatService.dart';
 import 'package:final_project/services/connectivityService.dart';
 import 'package:final_project/services/syncService.dart';
 import 'package:flutter/material.dart';
@@ -575,6 +578,135 @@ class _CommentsCardState extends State<_CommentsCard> {
     );
   }
 
+  // ── Commenter action sheet ──────────────────────────────────────────────
+  void _showCommenterActions(CommentModel comment) {
+    final name     = comment.userFullName ?? 'User';
+    final initials = name.isNotEmpty ? name[0].toUpperCase() : '?';
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (_) => Container(
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        padding: const EdgeInsets.fromLTRB(20, 12, 20, 28),
+        child: SafeArea(
+          top: false,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Center(
+                child: Container(
+                  width: 36, height: 4,
+                  margin: const EdgeInsets.only(bottom: 16),
+                  decoration: BoxDecoration(
+                    color: Colors.grey.shade300,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+              Row(children: [
+                _buildAvatar(comment.userProfilePic, initials, 42),
+                const SizedBox(width: 12),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(name, style: const TextStyle(
+                        fontSize: 15, fontWeight: FontWeight.w800,
+                        color: _kBlueDark)),
+                    if ((comment.userUserName ?? '').isNotEmpty)
+                      Text('@${comment.userUserName}',
+                          style: const TextStyle(
+                              fontSize: 12, color: _kBlueLight)),
+                  ],
+                ),
+              ]),
+              const SizedBox(height: 14),
+              const Divider(height: 1),
+              const SizedBox(height: 4),
+              ListTile(
+                leading: const Icon(Icons.person_rounded, color: _kViolet),
+                title: const Text('View Profile',
+                    style: TextStyle(fontWeight: FontWeight.w600,
+                        color: _kBlueDark)),
+                onTap: () {
+                  Navigator.pop(context);
+                  Navigator.push(context, MaterialPageRoute(
+                    builder: (_) => ProfileScreen(
+                      localUserId:  comment.userId,
+                      isOwnProfile: false,
+                    ),
+                  ));
+                },
+              ),
+              if (widget.localUserId != null)
+                ListTile(
+                  leading: const Icon(Icons.message_rounded, color: _kBlue),
+                  title: const Text('Message',
+                      style: TextStyle(fontWeight: FontWeight.w600,
+                          color: _kBlueDark)),
+                  onTap: () {
+                    Navigator.pop(context);
+                    _openChat(comment);
+                  },
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openChat(CommentModel comment) async {
+    if (widget.localUserId == null || !mounted) return;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(
+          child: CircularProgressIndicator(color: _kViolet)),
+    );
+
+    try {
+      final currentUser     = await DatabaseHelper().getUserById(widget.localUserId!);
+      final currentUserName = currentUser?['fullName'] as String? ?? 'User';
+      final otherUserName   = comment.userFullName ?? 'User';
+
+      final convId = await ChatService().getOrCreateConversation(
+        currentUserId:   'local_${widget.localUserId}',
+        currentUserName: currentUserName,
+        otherUserId:     'local_${comment.userId}',
+        otherUserName:   otherUserName,
+      );
+
+      if (!mounted) return;
+      Navigator.pop(context); // close loading dialog
+
+      Navigator.push(context, MaterialPageRoute(
+        builder: (_) => ChatRoomScreen(
+          conversationId:  convId,
+          currentUserId:   'local_${widget.localUserId}',
+          currentUserName: currentUserName,
+          otherPersonName: otherUserName,
+          otherPersonId:   'local_${comment.userId}',
+        ),
+      ));
+    } catch (e) {
+      if (!mounted) return;
+      Navigator.pop(context); // close loading dialog
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Could not open chat: $e'),
+        backgroundColor: Colors.red,
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12)),
+      ));
+    }
+  }
+
   // ── Thread builder ────────────────────────────────────────────────────────
   Widget _buildCommentThread(CommentModel comment) {
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -659,12 +791,19 @@ class _CommentsCardState extends State<_CommentsCard> {
 
                     // ── Author + timestamp + accepted badge ──
                     Row(children: [
-                      Flexible(child: Text(
-                          comment.userFullName ?? 'Unknown',
-                          style: TextStyle(
-                              fontWeight: FontWeight.w700,
-                              fontSize: isReply ? 11.5 : 12.5,
-                              color: _kBlueDark))),
+                      Flexible(child: GestureDetector(
+                        onTap: comment.userId != widget.localUserId
+                            ? () => _showCommenterActions(comment)
+                            : null,
+                        child: Text(
+                            comment.userFullName ?? 'Unknown',
+                            style: TextStyle(
+                                fontWeight: FontWeight.w700,
+                                fontSize: isReply ? 11.5 : 12.5,
+                                color: comment.userId != widget.localUserId
+                                    ? _kViolet
+                                    : _kBlueDark)),
+                      )),
                       const SizedBox(width: 6),
                       Text(_timeAgo(comment.timestamp),
                           style: const TextStyle(
