@@ -762,7 +762,7 @@ class _DashboardHomeState extends State<DashboardHome> {
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                // Tappable name
+                                // Table name
                                 Row(
                                   children: [
                                     Flexible(

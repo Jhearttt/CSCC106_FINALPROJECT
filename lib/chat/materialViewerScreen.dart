@@ -17,7 +17,7 @@ class MaterialViewerScreen extends StatefulWidget {
   final String fileUrl;
   final String uploaderName;
   final String currentUserId;
-  final String uploaderUserId; // ← ADD THIS
+  final String uploaderUserId;
 
   const MaterialViewerScreen({
     super.key,
@@ -27,7 +27,7 @@ class MaterialViewerScreen extends StatefulWidget {
     required this.fileUrl,
     required this.uploaderName,
     required this.currentUserId,
-    required this.uploaderUserId, // ← ADD THIS
+    required this.uploaderUserId,
   });
 
   @override
@@ -43,6 +43,9 @@ class _MaterialViewerScreenState extends State<MaterialViewerScreen> {
   String  _externalLink = '';
   final   _linkController = TextEditingController();
   bool    _savingLink = false;
+
+  // Check if current user is the owner
+  bool get _isOwner => widget.currentUserId == widget.uploaderUserId;
 
   @override
   void initState() {
@@ -102,27 +105,43 @@ class _MaterialViewerScreenState extends State<MaterialViewerScreen> {
   // ── Save external link ─────────────────────────────────────────────────────
   Future<void> _saveExternalLink() async {
     final link = _linkController.text.trim();
-    if (link.isEmpty) return;
+    if (link.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please enter a valid link'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
+    
     setState(() => _savingLink = true);
     try {
       await FirebaseFirestore.instance
           .collection('knowledge')
           .doc(widget.docId)
           .update({'externalLink': link});
-      setState(() => _externalLink = link);
+      
+      setState(() {
+        _externalLink = link;
+      });
+      
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('✅ Link saved!'),
+            content: Text('✅ Link saved successfully!'),
             backgroundColor: Colors.green,
+            duration: Duration(seconds: 2),
           ),
         );
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed: $e'),
-              backgroundColor: Colors.red),
+          SnackBar(
+            content: Text('Failed to save link: $e'),
+            backgroundColor: Colors.red,
+          ),
         );
       }
     } finally {
@@ -138,8 +157,10 @@ class _MaterialViewerScreenState extends State<MaterialViewerScreen> {
     } else {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Could not open link'),
-              backgroundColor: Colors.red),
+          const SnackBar(
+            content: Text('Could not open link'),
+            backgroundColor: Colors.red,
+          ),
         );
       }
     }
@@ -151,8 +172,9 @@ class _MaterialViewerScreenState extends State<MaterialViewerScreen> {
       backgroundColor: _kBg,
       appBar: _buildAppBar(),
       body: Column(children: [
-        // ── External link banner ───────────────────────────────────────────
-        _buildExternalLinkSection(),
+        // ── External link section (only show if owner OR has existing link) ──
+        if (_isOwner || _externalLink.isNotEmpty)
+          _buildExternalLinkSection(),
 
         // ── Main content ───────────────────────────────────────────────────
         Expanded(child: _buildContent()),
@@ -173,9 +195,27 @@ class _MaterialViewerScreenState extends State<MaterialViewerScreen> {
               style: const TextStyle(
                   fontWeight: FontWeight.bold, fontSize: 15),
               overflow: TextOverflow.ellipsis),
-          Text('by ${widget.uploaderName}',
-              style: const TextStyle(
-                  fontSize: 11, color: Colors.grey)),
+          Row(
+            children: [
+              Text('by ${widget.uploaderName}',
+                  style: const TextStyle(
+                      fontSize: 11, color: Colors.grey)),
+              if (_isOwner)
+                Container(
+                  margin: const EdgeInsets.only(left: 8),
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: _kAccent.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: const Text('Owner',
+                      style: TextStyle(
+                          fontSize: 9,
+                          color: _kAccent,
+                          fontWeight: FontWeight.w600)),
+                ),
+            ],
+          ),
         ],
       ),
       actions: [
@@ -218,7 +258,7 @@ class _MaterialViewerScreenState extends State<MaterialViewerScreen> {
                       color: _kAccent.withOpacity(0.25)),
                 ),
                 child: Row(children: [
-                  const Icon(Icons.download_rounded,
+                  const Icon(Icons.link_rounded,
                       color: _kAccent, size: 18),
                   const SizedBox(width: 8),
                   Expanded(
@@ -239,58 +279,75 @@ class _MaterialViewerScreenState extends State<MaterialViewerScreen> {
             const SizedBox(height: 8),
           ],
 
-          // Add/update link field — only for uploader
-          if (widget.currentUserId == widget.uploaderUserId)
-            Row(children: [
-              Expanded(
-                child: TextField(
-                  controller: _linkController,
-                  style: const TextStyle(fontSize: 13),
-                  decoration: InputDecoration(
-                    hintText: _externalLink.isEmpty
-                        ? 'Add download link (Google Drive, GitHub...)'
-                        : 'Update download link...',
-                    hintStyle: const TextStyle(
-                        color: Colors.grey, fontSize: 12),
-                    prefixIcon: const Icon(Icons.link_rounded,
-                        color: Colors.grey, size: 18),
-                    filled: true,
-                    fillColor: _kBg,
-                    contentPadding: const EdgeInsets.symmetric(
-                        vertical: 10),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
-                      borderSide: BorderSide.none,
+          // Add/update link field — ONLY for owner
+          if (_isOwner)
+            Column(
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _linkController,
+                        style: const TextStyle(fontSize: 13),
+                        decoration: InputDecoration(
+                          hintText: _externalLink.isEmpty
+                              ? 'Add download link (Google Drive, GitHub...)'
+                              : 'Update download link...',
+                          hintStyle: const TextStyle(
+                              color: Colors.grey, fontSize: 12),
+                          prefixIcon: const Icon(Icons.link_rounded,
+                              color: Colors.grey, size: 18),
+                          filled: true,
+                          fillColor: _kBg,
+                          contentPadding: const EdgeInsets.symmetric(
+                              vertical: 12, horizontal: 4),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            borderSide: BorderSide.none,
+                          ),
+                        ),
+                      ),
                     ),
+                    const SizedBox(width: 8),
+                    GestureDetector(
+                      onTap: _savingLink ? null : _saveExternalLink,
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 200),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 18, vertical: 12),
+                        decoration: BoxDecoration(
+                          color: _kAccent,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: _savingLink
+                            ? const SizedBox(
+                                width: 18, 
+                                height: 18,
+                                child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: Colors.white),
+                              )
+                            : const Text('Save',
+                                style: TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w700)),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  _externalLink.isEmpty 
+                      ? 'Add a Google Drive or GitHub link for students to download'
+                      : 'Edit the download link above',
+                  style: TextStyle(
+                    fontSize: 10,
+                    color: Colors.grey.shade500,
                   ),
                 ),
-              ),
-              const SizedBox(width: 8),
-              GestureDetector(
-                onTap: _savingLink ? null : _saveExternalLink,
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 200),
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 14, vertical: 10),
-                  decoration: BoxDecoration(
-                    color: _kAccent,
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: _savingLink
-                      ? const SizedBox(
-                    width: 16, height: 16,
-                    child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: Colors.white),
-                  )
-                      : const Text('Save',
-                      style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 12,
-                          fontWeight: FontWeight.w700)),
-                ),
-              ),
-            ]),
+              ],
+            ),
         ],
       ),
     );
@@ -430,14 +487,16 @@ class _MaterialViewerScreenState extends State<MaterialViewerScreen> {
                 border: Border.all(
                     color: Colors.orange.withOpacity(0.25)),
               ),
-              child: const Row(children: [
-                Icon(Icons.info_outline_rounded,
+              child: Row(children: [
+                const Icon(Icons.info_outline_rounded,
                     color: Colors.orange, size: 16),
-                SizedBox(width: 8),
+                const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    'No download link added yet. The uploader can add a Google Drive or GitHub link above.',
-                    style: TextStyle(
+                    _isOwner 
+                        ? 'Add a download link above using the text field'
+                        : 'No download link added yet. The uploader can add a Google Drive or GitHub link above.',
+                    style: const TextStyle(
                         fontSize: 12, color: Colors.orange),
                   ),
                 ),

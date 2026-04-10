@@ -3,13 +3,13 @@ import 'dart:convert';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:final_project/backend/databaseHelper.dart';
 import 'package:final_project/frontend/communityFeedScreen.dart';
-import 'package:final_project/frontend/createPostScreen.dart';
 import 'package:final_project/frontend/dashboard.dart';
 import 'package:final_project/frontend/loginScreen.dart';
 import 'package:final_project/frontend/notificationsScreen.dart';
 import 'package:final_project/frontend/profileScreen.dart';
 import 'package:final_project/chat/hubScreen.dart';
 import 'package:final_project/GoogleServices/auth_service.dart';
+import 'package:final_project/services/notificationService.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
@@ -45,12 +45,11 @@ const kVioletGrad = LinearGradient(
   end: Alignment.bottomRight,
 );
 
-// ─── Nav tab index constants (per SRS: Dashboard, Community, Create Post, Profile)
+// ─── Nav tab index constants (per SRS: Dashboard, Community, Notifications, Hub)
 const _tabDashboard = 0;
 const _tabCommunity = 1;
-const _tabCreate = 2;
-const _tabProfile = 3;
-const _tabHub = 4;
+const _tabNotifications = 2;
+const _tabHub = 3;
 
 class Homepage extends StatelessWidget {
   final int? localUserId;
@@ -75,6 +74,21 @@ class _HomePageHomeState extends State<HomePageHome>
   User? _user;
   String _localUserName = 'User';
   String? _localProfilePic;
+  String? _firebaseUserId; // Add this
+
+  // Add this method to get the notification user ID
+  String? _getNotificationUserId() {
+    // Priority: Firebase Auth user > Local user
+    final firebaseUser = FirebaseAuth.instance.currentUser;
+    if (firebaseUser?.uid != null && firebaseUser!.uid.isNotEmpty) {
+      return firebaseUser.uid;
+    }
+    if (widget.localUserId != null) {
+      return 'local_${widget.localUserId}';
+    }
+    return null;
+  }
+
 
   // Screens for tab indices 0, 1, 3 — Create Post (index 2) is launched modally
   late final List<Widget?> _screens;
@@ -86,6 +100,9 @@ class _HomePageHomeState extends State<HomePageHome>
   bool _hasUnread = false;
   bool _remoteUidUnread = false;
   bool _remoteLocalUnread = false;
+  late Stream<int> _unreadCountStream; // Add this
+  StreamSubscription<int>? _unreadSubscription;
+
   final List<StreamSubscription<QuerySnapshot>> _notifSubs = [];
 
   @override
@@ -97,14 +114,27 @@ class _HomePageHomeState extends State<HomePageHome>
     _screens = [
       DashboardHome(localUserId: widget.localUserId),
       CommunityFeedScreen(localUserId: widget.localUserId),
-      null,
-      ProfileScreen(
+      NotificationsScreen(
         localUserId: widget.localUserId,
-        embeddedMode: true,
+        firebaseUserId: _getNotificationUserId(),
       ),
-      null, // ← Hub always built fresh in body
+      null, // Hub always built fresh in body
     ];
+
+    if (_getNotificationUserId() != null) {
+    // This ensures the notification badge updates in real-time
+    NotificationService.instance.unreadCountStream(_getNotificationUserId()!)
+        .listen((count) {
+      if (mounted) {
+        setState(() {
+          // Just trigger rebuild to update the badge
+        });
+      }
+    });
   }
+  }
+
+
 
   // ── Add this method ────────────────────────────────────────────────────
   Future<void> _loadLocalUserName() async {
@@ -119,21 +149,8 @@ class _HomePageHomeState extends State<HomePageHome>
     }
   }
 
-  // ── Create Post tab launches as a full screen then returns to Community ──
+  // ── Tab handling ────────────────────────────────────────────────────────
   void _handleTabTap(int index) {
-    if (index == _tabCreate) {
-      Navigator.of(context)
-          .push(
-            MaterialPageRoute(
-              builder: (_) => CreatePostScreen(localUserId: widget.localUserId),
-            ),
-          )
-          .then((_) {
-            // After returning from create, switch to Community Feed
-            setState(() => _tab = _tabCommunity);
-          });
-      return;
-    }
     setState(() => _tab = index);
   }
 
@@ -188,76 +205,89 @@ class _HomePageHomeState extends State<HomePageHome>
 
   // ── App Bar ────────────────────────────────────────────────────────────────
   PreferredSizeWidget _buildAppBar() {
-    return PreferredSize(
-      preferredSize: const Size.fromHeight(66),
-      child: Container(
-        decoration: BoxDecoration(
-          gradient: const LinearGradient(
-            colors: [Color(0xFFEDE9FE), Color(0xFFFAF5FF)],
-            begin: Alignment.centerLeft,
-            end: Alignment.centerRight,
-          ),
-          boxShadow: [
-            BoxShadow(
-              color: kViolet.withOpacity(0.12),
-              blurRadius: 20,
-              offset: const Offset(0, 4),
-            ),
-          ],
+  return PreferredSize(
+    preferredSize: const Size.fromHeight(66),
+    child: Container(
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [Color(0xFFEDE9FE), Color(0xFFFAF5FF)],
+          begin: Alignment.centerLeft,
+          end: Alignment.centerRight,
         ),
-        child: SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-            child: Row(
-              children: [
-                Builder(
-                  builder: (ctx) => GestureDetector(
-                    onTap: () => Scaffold.of(ctx).openDrawer(),
-                    child: _glassBtn(icon: Icons.menu_rounded),
+        boxShadow: [
+          BoxShadow(
+            color: kViolet.withOpacity(0.12),
+            blurRadius: 20,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          child: Row(
+            children: [
+              Builder(
+                builder: (ctx) => GestureDetector(
+                  onTap: () => Scaffold.of(ctx).openDrawer(),
+                  child: _glassBtn(icon: Icons.menu_rounded),
+                ),
+              ),
+              const SizedBox(width: 12),
+              ShaderMask(
+                shaderCallback: (b) => kVioletGrad.createShader(b),
+                child: const Text(
+                  "CampusAid",
+                  style: TextStyle(
+                    fontSize: 22,
+                    fontWeight: FontWeight.w900,
+                    color: Colors.white,
+                    letterSpacing: -0.8,
                   ),
                 ),
-                const SizedBox(width: 12),
-                ShaderMask(
-                  shaderCallback: (b) => kVioletGrad.createShader(b),
-                  child: const Text(
-                    "CampusAid",
-                    style: TextStyle(
-                      fontSize: 22,
-                      fontWeight: FontWeight.w900,
-                      color: Colors.white,
-                      letterSpacing: -0.8,
-                    ),
+              ),
+              const Spacer(),
+              
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 5,
+                ),
+                decoration: BoxDecoration(
+                  gradient: const LinearGradient(
+                    colors: [Color(0xFFEDE9FE), Color(0xFFDDD6FE)],
+                  ),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                    color: kViolet.withOpacity(0.25),
+                    width: 1,
                   ),
                 ),
-                const Spacer(),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 5,
-                  ),
-                  decoration: BoxDecoration(
-                    gradient: const LinearGradient(
-                      colors: [Color(0xFFEDE9FE), Color(0xFFDDD6FE)],
-                    ),
-                    borderRadius: BorderRadius.circular(20),
-                    border: Border.all(
-                      color: kViolet.withOpacity(0.25),
-                      width: 1,
-                    ),
-                  ),
-                  child: Text(
-                    _tabLabel(_tab),
-                    style: const TextStyle(
-                      color: kViolet,
-                      fontSize: 11,
-                      fontWeight: FontWeight.w700,
-                      letterSpacing: 0.2,
-                    ),
+                child: Text(
+                  _tabLabel(_tab),
+                  style: const TextStyle(
+                    color: kViolet,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 0.2,
                   ),
                 ),
-                const SizedBox(width: 8),
-  
-                Container(
+              ),
+              const SizedBox(width: 8),
+
+              GestureDetector(
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => ProfileScreen(
+                        localUserId: widget.localUserId,
+                        embeddedMode: false,
+                      ),
+                    ),
+                  );
+                },
+                child: Container(
                   width: 38,
                   height: 38,
                   decoration: BoxDecoration(
@@ -298,26 +328,74 @@ class _HomePageHomeState extends State<HomePageHome>
                     );
                   }(),
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
         ),
       ),
-    );
-  }
+    ),
+  );
+}
+
+// ✅ ADD THIS METHOD to build the notification badge
+Widget _buildNotificationBadge(String userId) {
+  return StreamBuilder<int>(
+    stream: NotificationService.instance.unreadCountStream(userId),
+    initialData: 0,
+    builder: (context, snapshot) {
+      final unreadCount = snapshot.data ?? 0;
+      
+      return GestureDetector(
+        onTap: () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => NotificationsScreen(
+                localUserId: widget.localUserId,
+                firebaseUserId: userId,
+              ),
+            ),
+          );
+        },
+        child: Container(
+          width: 18,
+          height: 18,
+          decoration: BoxDecoration(
+            color: Colors.red,
+            borderRadius: BorderRadius.circular(9),
+            border: Border.all(color: Colors.white, width: 2),
+          ),
+          child: unreadCount > 0
+              ? Center(
+                  child: Text(
+                    unreadCount > 99 ? '99+' : '$unreadCount',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 9,
+                      fontWeight: FontWeight.bold,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                )
+              : null,
+        ),
+      );
+    },
+  );
+}
 
   String _tabLabel(int tab) {
     switch (tab) {
       case _tabDashboard:
-        return '✦  Dashboard';
+        return 'Dashboard';
       case _tabCommunity:
-        return '✦  Community';
-      case _tabCreate:
-        return '✦  Create Post';
-      case _tabProfile:
-        return '✦  Profile';
+        return 'Community';
+      case _tabNotifications:
+        return 'Notifications';
+      case _tabHub:
+        return 'Hub';
       default:
-        return '✦  CampusAid';
+        return 'CampusAid';
     }
   }
 
@@ -391,8 +469,8 @@ class _HomePageHomeState extends State<HomePageHome>
             children: [
               _navPill(_tabDashboard, Icons.dashboard_rounded, "Dashboard"),
               _navPill(_tabCommunity, Icons.people_alt_rounded, "Community"),
-              _navPill(_tabProfile, Icons.person_rounded, "Profile"),
-              _navPill(_tabHub, Icons.hub_rounded, "Hub"), // ← fixed
+              _navPill(_tabNotifications, Icons.notifications_rounded, "Notifications"),
+              _navPill(_tabHub, Icons.hub_rounded, "Hub"),
             ],
           ),
         ),
@@ -402,16 +480,16 @@ class _HomePageHomeState extends State<HomePageHome>
 
   Widget _navPill(int index, IconData icon, String label) {
     final active = _tab == index;
-    // Create Post pill uses a distinct blush accent to stand out
-    final isCreate = index == _tabCreate;
-    final activeGrad = isCreate
+    // Notifications pill uses a distinct blush accent to stand out
+    final isNotifications = index == _tabNotifications;
+    final activeGrad = isNotifications
         ? const LinearGradient(
             colors: [Color(0xFFEC4899), kBlush],
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
           )
         : kVioletGrad;
-    final activeShadow = isCreate
+    final activeShadow = isNotifications
         ? kBlush.withOpacity(0.30)
         : kViolet.withOpacity(0.30);
 
@@ -438,22 +516,33 @@ class _HomePageHomeState extends State<HomePageHome>
                 ]
               : [],
         ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
+        child: Stack(
           children: [
-            Icon(icon, color: active ? Colors.white : kInkMuted, size: 20),
-            if (active) ...[
-              const SizedBox(width: 6),
-              Text(
-                label,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.w800,
-                  fontSize: 12,
-                  letterSpacing: -0.2,
-                ),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(icon, color: active ? Colors.white : kInkMuted, size: 20),
+                if (active) ...[
+                  const SizedBox(width: 6),
+                  Text(
+                    label,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w800,
+                      fontSize: 12,
+                      letterSpacing: -0.2,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+            // Notification badge for notifications tab
+            if (isNotifications && _getNotificationUserId() != null)
+              Positioned(
+                right: 0,
+                top: 0,
+                child: _buildNotificationBadge(_getNotificationUserId()!),
               ),
-            ],
           ],
         ),
       ),
@@ -611,7 +700,15 @@ class _HomePageHomeState extends State<HomePageHome>
                   () {
                     Navigator.pop(context);
                     _profileTabNotifier.value = 1; // jump to Skill Cards tab
-                    setState(() => _tab = _tabProfile);
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => ProfileScreen(
+                          localUserId: widget.localUserId,
+                          embeddedMode: false,
+                        ),
+                      ),
+                    );
                   },
                 ),
 

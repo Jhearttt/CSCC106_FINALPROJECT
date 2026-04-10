@@ -676,7 +676,6 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
                 _attachOption(Icons.image_rounded, 'Photo', const Color(0xFF10B981)),
                 _attachOption(Icons.insert_drive_file_rounded, 'File', const Color(0xFF3B82F6)),
                 _attachOption(Icons.link_rounded, 'Link', const Color(0xFF8B5CF6)),
-                _attachOption(Icons.location_on_rounded, 'Location', const Color(0xFFEF4444)),
               ],
             ),
           ],

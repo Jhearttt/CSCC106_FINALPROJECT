@@ -1,3 +1,6 @@
+import 'dart:io';
+import 'dart:convert';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/cupertino.dart';
 
@@ -6,7 +9,10 @@ class ChatService {
 
   /// Get the canonical ID for any user (converts to consistent format)
   Future<String> getCanonicalId(String userId) async {
+    debugPrint('🔍 Getting canonical ID for: $userId');
+    
     if (userId.startsWith('local_')) {
+      debugPrint('   Already local format, returning: $userId');
       return userId;
     }
 
@@ -16,13 +22,20 @@ class ChatService {
         final data = userDoc.data();
         final localId = data?['localId'];
         if (localId != null) {
-          return 'local_$localId';
+          final canonicalId = 'local_$localId';
+          debugPrint('   Found localId $localId, returning canonical: $canonicalId');
+          return canonicalId;
+        } else {
+          debugPrint('   No localId found for Google user, returning original: $userId');
         }
+      } else {
+        debugPrint('   No user document found for: $userId');
       }
     } catch (e) {
-      debugPrint('Error getting canonical ID for $userId: $e');
+      debugPrint('❌ Error getting canonical ID for $userId: $e');
     }
 
+    debugPrint('   Returning fallback ID: $userId');
     return userId;
   }
 
@@ -49,7 +62,9 @@ class ChatService {
     final canonicalCurrentId = await getCanonicalId(currentUserId);
     final canonicalOtherId = await getCanonicalId(otherUserId);
 
-    debugPrint('🔍 Creating/finding conversation between $canonicalCurrentId and $canonicalOtherId');
+    debugPrint('🔍 Creating/finding conversation:');
+    debugPrint('   Current user: $currentUserId -> $canonicalCurrentId ($currentUserName)');
+    debugPrint('   Other user: $otherUserId -> $canonicalOtherId ($otherUserName)');
 
     final existingConversations = await _db
         .collection('conversations')
@@ -62,6 +77,8 @@ class ChatService {
         final participantCanonical = await getCanonicalId(participant);
         if (participantCanonical == canonicalOtherId) {
           debugPrint('✅ Found existing conversation: ${doc.id}');
+          debugPrint('   Existing participants: ${doc['participants']}');
+          debugPrint('   Existing participantNames: ${doc['participantNames']}');
           return doc.id;
         }
       }
@@ -73,6 +90,9 @@ class ChatService {
       canonicalCurrentId: currentUserName,
       canonicalOtherId: otherUserName,
     };
+
+    debugPrint('   Participants to store: $participants');
+    debugPrint('   ParticipantNames to store: $participantNames');
 
     final docRef = await _db.collection('conversations').add({
       'participants': participants,
@@ -175,6 +195,61 @@ class ChatService {
         .orderBy('createdAt')
         .snapshots();
   }
+
+  // In chatService.dart - Add these methods
+
+Future<void> sendMediaMessage({
+  required String conversationId,
+  required String senderId,
+  required String senderName,
+  required String type, // 'photo', 'file', 'link'
+  required String content, // URL or file path or link
+  String? fileName,
+  String? fileSize,
+}) async {
+  try {
+    final messageData = {
+      'senderId': senderId,
+      'senderName': senderName,
+      'type': type,
+      'content': content,
+      'fileName': fileName,
+      'fileSize': fileSize,
+      'createdAt': FieldValue.serverTimestamp(),
+      'isRead': false,
+    };
+    
+    await FirebaseFirestore.instance
+        .collection('conversations')
+        .doc(conversationId)
+        .collection('messages')
+        .add(messageData);
+        
+    // Update last message in conversation
+    await FirebaseFirestore.instance
+        .collection('conversations')
+        .doc(conversationId)
+        .update({
+      'lastMessage': type == 'photo' ? '📷 Photo' : 
+                     type == 'file' ? '📎 $fileName' : 
+                     '🔗 Link',
+      'lastMessageTime': FieldValue.serverTimestamp(),
+    });
+  } catch (e) {
+    throw Exception('Failed to send media message: $e');
+  }
+}
+
+// Convert image to base64 string
+Future<String> convertImageToBase64(File imageFile) async {
+  try {
+    final bytes = await imageFile.readAsBytes();
+    final base64String = base64Encode(bytes);
+    return 'data:image/jpeg;base64,$base64String';
+  } catch (e) {
+    throw Exception('Failed to convert image to base64: $e');
+  }
+}
 
   Future<void> markMessagesAsRead(String conversationId, String userId) async {
     try {

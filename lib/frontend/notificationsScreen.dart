@@ -1,22 +1,11 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:final_project/backend/databaseHelper.dart';
+import 'package:final_project/frontend/homePage.dart';
 import 'package:flutter/material.dart';
-
-// ─── Palette ──────────────────────────────────────────────────────────────────
-const _kInk         = Color(0xFF1E1B4B);
-const _kInkLight    = Color(0xFF818CF8);
-const _kInkMuted    = Color(0xFFA5B4FC);
-const _kViolet      = Color(0xFF7B6CF6);
-const _kVioletLight = Color(0xFFA78BFA);
-const _kVioletSoft  = Color(0xFFEDE9FE);
-const _kBlush       = Color(0xFFF472B6);
-const _kMint        = Color(0xFF34D399);
-const _kSky         = Color(0xFF60A5FA);
-const _kAmber       = Color(0xFFFCD34D);
-const _kBorderGlass = Color(0xFFE0D9FF);
+import 'package:final_project/services/notificationService.dart';
 
 class NotificationsScreen extends StatefulWidget {
-  final int?    localUserId;
+  final int? localUserId;
   final String? firebaseUserId;
 
   const NotificationsScreen({
@@ -29,110 +18,163 @@ class NotificationsScreen extends StatefulWidget {
   State<NotificationsScreen> createState() => _NotificationsScreenState();
 }
 
-class _NotificationsScreenState extends State<NotificationsScreen>
-    with SingleTickerProviderStateMixin {
-  // SQLite notifications (comments + replies)
-  List<Map<String, dynamic>> _localNotifs  = [];
-  // Firestore notifications (chat + forum)
-  List<Map<String, dynamic>> _remoteNotifs = [];
-  bool _loading = true;
-  late TabController _tabCtrl;
+
+class _NotificationBadge extends StatefulWidget {
+  final String userId;
+  final VoidCallback? onTap;
+  
+  const _NotificationBadge({
+    required this.userId,
+    this.onTap,
+  });
+  
+  @override
+  State<_NotificationBadge> createState() => _NotificationBadgeState();
+}
+
+class _NotificationBadgeState extends State<_NotificationBadge> {
+  late Stream<int> _unreadCountStream;
 
   @override
   void initState() {
     super.initState();
-    _tabCtrl = TabController(length: 3, vsync: this);
-    _load();
+    _unreadCountStream = NotificationService.instance
+        .unreadCountStream(widget.userId);
   }
 
   @override
-  void dispose() {
-    _tabCtrl.dispose();
-    super.dispose();
+  Widget build(BuildContext context) {
+    return StreamBuilder<int>(
+      stream: _unreadCountStream,
+      initialData: 0,
+      builder: (context, snapshot) {
+        final unreadCount = snapshot.data ?? 0;
+        
+        return Stack(
+          children: [
+            IconButton(
+              icon: const Icon(Icons.notifications_outlined),
+              onPressed: widget.onTap ?? () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => NotificationsScreen(
+                      firebaseUserId: widget.userId,
+                    ),
+                  ),
+                );
+              },
+            ),
+            if (unreadCount > 0)
+              Positioned(
+                right: 8,
+                top: 8,
+                child: Container(
+                  padding: const EdgeInsets.all(2),
+                  decoration: BoxDecoration(
+                    color: Colors.red,
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  constraints: const BoxConstraints(
+                    minWidth: 16,
+                    minHeight: 16,
+                  ),
+                  child: Text(
+                    unreadCount > 99 ? '99+' : '$unreadCount',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 10,
+                      fontWeight: FontWeight.bold,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+              ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _NotificationsScreenState extends State<NotificationsScreen>
+    with SingleTickerProviderStateMixin, AutomaticKeepAliveClientMixin {
+  List<Map<String, dynamic>> _localNotifs = [];
+  List<QueryDocumentSnapshot> _remoteNotifs = [];
+  late TabController _tabCtrl;
+  late Stream<QuerySnapshot> _notificationsStream;
+  bool _isLoading = true;
+
+  @override
+  bool get wantKeepAlive => true;
+
+  @override
+  void initState() {
+    super.initState();
+    _tabCtrl = TabController(length: 1, vsync: this);
+    _loadLocalNotifications();
+    _setupRemoteNotificationsStream();
   }
 
-  Future<void> _load() async {
-    // Load SQLite (local) notifications
+  Future<void> _loadLocalNotifications() async {
     if (widget.localUserId != null) {
-      final list = await DatabaseHelper()
-          .getNotifications(widget.localUserId!);
-      await DatabaseHelper()
-          .markAllNotificationsRead(widget.localUserId!);
-      if (mounted) setState(() => _localNotifs = list);
-    }
-
-    // Load Firestore (remote) notifications
-    final userId = widget.firebaseUserId ??
-        (widget.localUserId != null
-            ? 'local_${widget.localUserId}'
-            : null);
-
-    if (userId != null) {
-      try {
-        final snap = await FirebaseFirestore.instance
-            .collection('notifications')
-            .where('userId', isEqualTo: userId)
-            .orderBy('createdAt', descending: true)
-            .limit(50)
-            .get();
-
-        // Mark all as read
-        final batch = FirebaseFirestore.instance.batch();
-        for (final doc in snap.docs) {
-          if (doc['isRead'] == false) {
-            batch.update(doc.reference, {'isRead': true});
-          }
-        }
-        await batch.commit();
-
-        if (mounted) {
-          setState(() {
-            _remoteNotifs = snap.docs
-                .map((d) => {'id': d.id, ...d.data()})
-                .toList();
-          });
-        }
-      } catch (e) {
-        debugPrint('Remote notifications load failed: $e');
+      final list = await DatabaseHelper().getNotifications(widget.localUserId!);
+      if (mounted) {
+        setState(() {
+          _localNotifs = list;
+          _isLoading = false;
+        });
       }
+    } else {
+      if (mounted) setState(() => _isLoading = false);
     }
-
-    if (mounted) setState(() => _loading = false);
   }
 
-  // ── Delete local notification ──────────────────────────────────────────────
+  void _setupRemoteNotificationsStream() {
+    final userId = widget.firebaseUserId ??
+        (widget.localUserId != null ? 'local_${widget.localUserId}' : null);
+    
+    if (userId != null) {
+      _notificationsStream = NotificationService.instance
+          .getNotificationsStream(userId);
+    }
+  }
+
+  Future<void> _markAllRemoteAsRead() async {
+    final userId = widget.firebaseUserId ??
+        (widget.localUserId != null ? 'local_${widget.localUserId}' : null);
+    
+    if (userId != null) {
+      await NotificationService.instance.markAllRead(userId);
+    }
+  }
+
   Future<void> _deleteLocal(int id) async {
     await DatabaseHelper().deleteNotification(id);
-    setState(() => _localNotifs.removeWhere((n) => n['id'] == id));
+    setState(() {
+      _localNotifs.removeWhere((n) => n['id'] == id);
+    });
   }
 
-  // ── Delete remote notification ─────────────────────────────────────────────
-  Future<void> _deleteRemote(String id) async {
-    await FirebaseFirestore.instance
-        .collection('notifications')
-        .doc(id)
-        .delete();
-    setState(() => _remoteNotifs.removeWhere((n) => n['id'] == id));
-  }
-
-  // ── Clear all ──────────────────────────────────────────────────────────────
   Future<void> _clearAll() async {
     // Clear local
     for (final n in _localNotifs) {
       await DatabaseHelper().deleteNotification(n['id'] as int);
     }
+    
     // Clear remote
-    final batch = FirebaseFirestore.instance.batch();
-    for (final n in _remoteNotifs) {
-      batch.delete(FirebaseFirestore.instance
-          .collection('notifications')
-          .doc(n['id'] as String));
+    final userId = widget.firebaseUserId ??
+        (widget.localUserId != null ? 'local_${widget.localUserId}' : null);
+    if (userId != null) {
+      await NotificationService.instance.deleteAllNotifications(userId);
     }
-    await batch.commit();
-    setState(() {
-      _localNotifs.clear();
-      _remoteNotifs.clear();
-    });
+    
+    if (mounted) {
+      setState(() {
+        _localNotifs.clear();
+        _remoteNotifs.clear();
+      });
+    }
   }
 
   String _timeAgo(dynamic dateVal) {
@@ -140,182 +182,143 @@ class _NotificationsScreenState extends State<NotificationsScreen>
       DateTime dt;
       if (dateVal is Timestamp) {
         dt = dateVal.toDate();
+      } else if (dateVal is DateTime) {
+        dt = dateVal;
       } else if (dateVal is String) {
         dt = DateTime.parse(dateVal);
       } else {
         return '';
       }
-      final diff = DateTime.now().difference(dt);
+      
+      final now = DateTime.now();
+      final diff = now.difference(dt);
+      
       if (diff.inMinutes < 1) return 'Just now';
-      if (diff.inHours  < 1) return '${diff.inMinutes}m ago';
-      if (diff.inDays   < 1) return '${diff.inHours}h ago';
-      if (diff.inDays   < 7) return '${diff.inDays}d ago';
-      return '${dt.day}/${dt.month}/${dt.year}';
-    } catch (_) { return ''; }
+      if (diff.inHours < 1) return '${diff.inMinutes}m ago';
+      if (diff.inDays < 1) return '${diff.inHours}h ago';
+      if (diff.inDays < 7) return '${diff.inDays}d ago';
+      if (diff.inDays < 30) return '${(diff.inDays / 7).floor()}w ago';
+      if (diff.inDays < 365) return '${(diff.inDays / 30).floor()}mo ago';
+      return '${(diff.inDays / 365).floor()}y ago';
+    } catch (_) {
+      return '';
+    }
   }
 
-  // ── Total unread count ─────────────────────────────────────────────────────
   int get _totalUnread {
-    final localUnread  = _localNotifs
+    final localUnread = _localNotifs
         .where((n) => (n['isRead'] as int? ?? 0) == 0).length;
     final remoteUnread = _remoteNotifs
         .where((n) => n['isRead'] == false).length;
     return localUnread + remoteUnread;
   }
 
-  List<Map<String, dynamic>> get _chatNotifs =>
-      _remoteNotifs.where((n) => n['type'] == 'chat').toList();
-
-  List<Map<String, dynamic>> get _forumNotifs =>
-      _remoteNotifs.where((n) => n['type'] == 'forum').toList();
-
   @override
   Widget build(BuildContext context) {
-    final hasAny = _localNotifs.isNotEmpty || _remoteNotifs.isNotEmpty;
-
+    super.build(context);
+    
     return Scaffold(
       backgroundColor: const Color(0xFFF0EEFF),
-      body: Stack(children: [
-        Container(decoration: const BoxDecoration(
-            gradient: LinearGradient(
-              colors: [Color(0xFFF0EEFF), Color(0xFFF5F0FF),
-                Color(0xFFFFF0FA), Color(0xFFEEFBF5)],
-              begin: Alignment.topCenter, end: Alignment.bottomCenter,
-              stops: [0.0, 0.35, 0.68, 1.0],
-            ))),
-
-        SafeArea(child: Column(children: [
-
-          // ── Header ──────────────────────────────────────────────────────
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
-            child: Row(children: [
-              GestureDetector(
-                onTap: () => Navigator.pop(context),
-                child: Container(
-                  width: 42, height: 42,
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.75),
-                    borderRadius: BorderRadius.circular(13),
-                    border: Border.all(color: _kBorderGlass, width: 1.2),
-                    boxShadow: [BoxShadow(
-                        color: _kViolet.withOpacity(0.10),
-                        blurRadius: 8, offset: const Offset(0, 3))],
-                  ),
-                  child: const Icon(Icons.arrow_back_ios_new_rounded,
-                      color: _kViolet, size: 17),
+      appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back, color: Color(0xFF1E1B4B)),
+          onPressed: () {
+            if (Navigator.canPop(context)) {
+              Navigator.pop(context);
+            } else {
+              Navigator.pushReplacement(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => Homepage(localUserId: widget.localUserId),
                 ),
+              );
+            }
+          },
+        ),
+        title: const Text(
+          "Notifications",
+          style: TextStyle(
+            fontSize: 20,
+            fontWeight: FontWeight.w900,
+            color: Color(0xFF1E1B4B),
+          ),
+        ),
+        actions: [
+          if (_localNotifs.isNotEmpty || _remoteNotifs.isNotEmpty)
+            TextButton.icon(
+              onPressed: _clearAll,
+              icon: const Icon(Icons.delete_outline, size: 18),
+              label: const Text("Clear all"),
+              style: TextButton.styleFrom(
+                foregroundColor: const Color(0xFFF472B6),
               ),
-              const SizedBox(width: 14),
-              Row(children: [
-                const Text("Notifications",
-                    style: TextStyle(fontSize: 20,
-                        fontWeight: FontWeight.w900,
-                        color: _kInk, letterSpacing: -0.4)),
-                if (_totalUnread > 0) ...[
-                  const SizedBox(width: 8),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 8, vertical: 2),
-                    decoration: BoxDecoration(
-                      color: _kViolet,
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: Text('$_totalUnread',
-                        style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 11,
-                            fontWeight: FontWeight.w800)),
-                  ),
-                ],
-              ]),
-              const Spacer(),
-              if (hasAny)
-                GestureDetector(
-                  onTap: _clearAll,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 12, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: _kBlush.withOpacity(0.10),
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(
-                          color: _kBlush.withOpacity(0.30)),
-                    ),
-                    child: const Text("Clear all",
-                        style: TextStyle(fontSize: 11.5,
-                            color: _kBlush,
-                            fontWeight: FontWeight.w700)),
-                  ),
-                ),
-            ]),
-          ),
-
-          const SizedBox(height: 12),
-
-          // ── Tabs ─────────────────────────────────────────────────────────
-          Container(
-            margin: const EdgeInsets.symmetric(horizontal: 16),
-            decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.60),
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: _kBorderGlass),
             ),
-            child: TabBar(
-              controller: _tabCtrl,
-              labelColor: _kViolet,
-              unselectedLabelColor: _kInkMuted,
-              indicatorColor: _kViolet,
-              indicatorWeight: 2.5,
-              dividerColor: Colors.transparent,
-              tabs: [
-                Tab(text: 'Posts${_localNotifs.isNotEmpty ? ' (${_localNotifs.length})' : ''}'),
-                Tab(text: 'Chats${_chatNotifs.isNotEmpty ? ' (${_chatNotifs.length})' : ''}'),
-                Tab(text: 'Forums${_forumNotifs.isNotEmpty ? ' (${_forumNotifs.length})' : ''}'),
-              ],
-            ),
-          ),
-
-          const SizedBox(height: 8),
-
-          // ── Tab content ───────────────────────────────────────────────────
-          Expanded(
-            child: _loading
-                ? const Center(child: CircularProgressIndicator(
-                color: _kViolet))
-                : TabBarView(
-              controller: _tabCtrl,
+        ],
+      ),
+      body: _isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : Column(
               children: [
-                // Posts tab (SQLite — comments + replies)
-                _buildList(
-                  items:     _localNotifs,
-                  emptyMsg:  "No post notifications yet",
-                  emptyHint: "You'll be notified when someone\ncomments or replies to your posts",
-                  builder:   _buildLocalTile,
+                // Tab Bar
+                Container(
+                  margin: const EdgeInsets.symmetric(horizontal: 16),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.60),
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: TabBar(
+                    controller: _tabCtrl,
+                    labelColor: const Color(0xFF7B6CF6),
+                    unselectedLabelColor: const Color(0xFFA5B4FC),
+                    indicatorColor: const Color(0xFF7B6CF6),
+                    tabs: [
+                      Tab(text: 'Posts ${_localNotifs.isNotEmpty ? '(${_localNotifs.length})' : ''}'),
+                    ],
+                  ),
                 ),
-                // Chats tab
-                _buildList(
-                  items:     _chatNotifs,
-                  emptyMsg:  "No chat notifications yet",
-                  emptyHint: "You'll be notified when someone\nsends you a message",
-                  builder:   _buildRemoteTile,
-                ),
-                // Forums tab
-                _buildList(
-                  items:     _forumNotifs,
-                  emptyMsg:  "No forum notifications yet",
-                  emptyHint: "Join forums to get notified\nwhen members post",
-                  builder:   _buildRemoteTile,
+                const SizedBox(height: 8),
+                
+                // Tab Bar View
+                Expanded(
+                  child: StreamBuilder<QuerySnapshot>(
+                    stream: _notificationsStream,
+                    builder: (context, snapshot) {
+                      if (snapshot.hasError) {
+                        return Center(child: Text('Error: ${snapshot.error}'));
+                      }
+                      
+                      if (snapshot.connectionState == ConnectionState.waiting) {
+                        return const Center(child: CircularProgressIndicator());
+                      }
+                      
+                      if (snapshot.hasData) {
+                        _remoteNotifs = snapshot.data!.docs;
+                        // Auto-mark as read when viewing
+                        _markAllRemoteAsRead();
+                      }
+                      
+                      return TabBarView(
+                        controller: _tabCtrl,
+                        children: [
+                          // Posts tab
+                          _buildList(
+                            items: _localNotifs,
+                            emptyMsg: "No post notifications",
+                            emptyHint: "Get notified when someone comments on your posts",
+                            builder: (n) => _buildLocalTile(n),
+                          ),
+                        ],
+                      );
+                    },
+                  ),
                 ),
               ],
             ),
-          ),
-        ])),
-      ]),
     );
   }
 
-  // ── Generic list builder ───────────────────────────────────────────────────
   Widget _buildList({
     required List<Map<String, dynamic>> items,
     required String emptyMsg,
@@ -324,198 +327,86 @@ class _NotificationsScreenState extends State<NotificationsScreen>
   }) {
     if (items.isEmpty) {
       return Center(
-        child: Column(mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Container(width: 72, height: 72,
-                  decoration: BoxDecoration(
-                      color: _kViolet.withOpacity(0.10),
-                      shape: BoxShape.circle),
-                  child: const Icon(Icons.notifications_none_rounded,
-                      color: _kViolet, size: 36)),
-              const SizedBox(height: 14),
-              Text(emptyMsg, style: const TextStyle(
-                  fontSize: 15, fontWeight: FontWeight.w700,
-                  color: _kInkLight)),
-              const SizedBox(height: 6),
-              Text(emptyHint,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                      fontSize: 12.5, color: _kInkMuted)),
-            ]),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.notifications_none, size: 64, color: const Color(0xFFA5B4FC)),
+            const SizedBox(height: 16),
+            Text(
+              emptyMsg,
+              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              emptyHint,
+              style: const TextStyle(color: Color(0xFFA5B4FC)),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
       );
     }
 
     return ListView.builder(
-      padding: const EdgeInsets.fromLTRB(16, 0, 16, 20),
+      padding: const EdgeInsets.all(16),
       itemCount: items.length,
-      itemBuilder: (_, i) => builder(items[i]),
+      itemBuilder: (context, index) => builder(items[index]),
     );
   }
 
-  // ── Local (SQLite) notification tile ──────────────────────────────────────
-  Widget _buildLocalTile(Map<String, dynamic> n) {
-    final isRead     = (n['isRead'] as int? ?? 0) == 1;
-    final type       = n['type'] as String? ?? 'comment';
-    final isReply    = type == 'reply';
-    final isAccepted = type == 'accepted';
-    final color = isAccepted ? _kMint
-        : isReply   ? _kBlush
-        : _kViolet;
-    final icon  = isAccepted ? Icons.check_circle_rounded
-        : isReply   ? Icons.reply_rounded
-        : Icons.comment_rounded;
-
-    return _NotifTile(
-      id:          n['id'].toString(),
-      isRead:      isRead,
-      color:       color,
-      icon:        icon,
-      fromName:    n['fromUserName'] ?? '',
-      message:     n['message']     ?? '',
-      subtitle:    n['postTitle']   ?? '',
-      timeAgo:     _timeAgo(n['createdAt']),
-      onDismiss:   () => _deleteLocal(n['id'] as int),
-    );
-  }
-
-  // ── Remote (Firestore) notification tile ──────────────────────────────────
-  Widget _buildRemoteTile(Map<String, dynamic> n) {
-    final isRead = n['isRead'] == true;
-    final type   = n['type'] as String? ?? 'chat';
-    final isChat = type == 'chat';
-    final color  = isChat ? _kSky : _kMint;
-    final icon   = isChat
-        ? Icons.chat_bubble_rounded
-        : Icons.forum_rounded;
-
-    return _NotifTile(
-      id:        n['id'].toString(),
-      isRead:    isRead,
-      color:     color,
-      icon:      icon,
-      fromName:  n['fromName'] ?? '',
-      message:   n['message']  ?? '',
-      subtitle:  n['title']    ?? '',
-      timeAgo:   _timeAgo(n['createdAt']),
-      onDismiss: () => _deleteRemote(n['id'] as String),
-    );
-  }
-}
-
-// ── Reusable notification tile ─────────────────────────────────────────────
-class _NotifTile extends StatelessWidget {
-  final String   id;
-  final bool     isRead;
-  final Color    color;
-  final IconData icon;
-  final String   fromName;
-  final String   message;
-  final String   subtitle;
-  final String   timeAgo;
-  final VoidCallback onDismiss;
-
-  const _NotifTile({
-    required this.id,
-    required this.isRead,
-    required this.color,
-    required this.icon,
-    required this.fromName,
-    required this.message,
-    required this.subtitle,
-    required this.timeAgo,
-    required this.onDismiss,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Dismissible(
-      key: Key('notif_$id'),
-      direction: DismissDirection.endToStart,
-      onDismissed: (_) => onDismiss(),
-      background: Container(
-        alignment: Alignment.centerRight,
-        padding: const EdgeInsets.only(right: 20),
-        margin: const EdgeInsets.only(bottom: 10),
-        decoration: BoxDecoration(
-          color: _kBlush.withOpacity(0.12),
-          borderRadius: BorderRadius.circular(18),
+  Widget _buildLocalTile(Map<String, dynamic> notification) {
+    final isRead = (notification['isRead'] as int? ?? 0) == 1;
+    final type = notification['type'] as String? ?? 'comment';
+    
+    IconData icon;
+    Color color;
+    
+    switch (type) {
+      case 'reply':
+        icon = Icons.reply;
+        color = const Color(0xFFF472B6);
+        break;
+      case 'accepted':
+        icon = Icons.check_circle;
+        color = const Color(0xFF34D399);
+        break;
+      default:
+        icon = Icons.comment;
+        color = const Color(0xFF7B6CF6);
+    }
+    
+    return Card(
+      margin: const EdgeInsets.only(bottom: 8),
+      color: isRead ? Colors.white.withOpacity(0.6) : Colors.white,
+      child: ListTile(
+        leading: CircleAvatar(
+          backgroundColor: color.withOpacity(0.1),
+          child: Icon(icon, color: color),
         ),
-        child: const Icon(Icons.delete_outline_rounded,
-            color: _kBlush, size: 22),
-      ),
-      child: Container(
-        margin: const EdgeInsets.only(bottom: 10),
-        padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-          color: isRead
-              ? Colors.white.withOpacity(0.60)
-              : Colors.white.withOpacity(0.92),
-          borderRadius: BorderRadius.circular(18),
-          border: Border.all(
-            color: isRead
-                ? _kBorderGlass
-                : color.withOpacity(0.30),
-            width: isRead ? 1.0 : 1.5,
+        title: Text(
+          notification['fromUserName'] ?? 'Someone',
+          style: TextStyle(
+            fontWeight: isRead ? FontWeight.normal : FontWeight.bold,
           ),
-          boxShadow: [BoxShadow(
-              color: _kViolet.withOpacity(isRead ? 0.04 : 0.09),
-              blurRadius: 12, offset: const Offset(0, 4))],
         ),
-        child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // Icon
-              Container(width: 40, height: 40,
-                  decoration: BoxDecoration(
-                      color: color.withOpacity(0.12),
-                      shape: BoxShape.circle),
-                  child: Icon(icon, color: color, size: 18)),
-              const SizedBox(width: 12),
-
-              // Content
-              Expanded(child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(children: [
-                      Expanded(child: Text(fromName,
-                          style: TextStyle(
-                              fontWeight: FontWeight.w800,
-                              fontSize: 13,
-                              color: isRead ? _kInkLight : _kInk))),
-                      if (!isRead)
-                        Container(width: 8, height: 8,
-                            decoration: const BoxDecoration(
-                                color: _kViolet,
-                                shape: BoxShape.circle)),
-                    ]),
-                    const SizedBox(height: 3),
-                    Text(message, style: TextStyle(
-                        fontSize: 12.5,
-                        color: isRead ? _kInkMuted : _kInkLight,
-                        height: 1.4)),
-                    const SizedBox(height: 5),
-                    Row(children: [
-                      if (subtitle.isNotEmpty)
-                        Expanded(child: Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 8, vertical: 3),
-                          decoration: BoxDecoration(
-                            color: color.withOpacity(0.10),
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: Text(subtitle,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.w700,
-                                  color: color)),
-                        )),
-                      const Spacer(),
-                      Text(timeAgo, style: const TextStyle(
-                          fontSize: 10.5, color: _kInkMuted)),
-                    ]),
-                  ])),
-            ]),
+        subtitle: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(notification['message'] ?? ''),
+            if (notification['postTitle'] != null)
+              Text(
+                notification['postTitle'],
+                style: const TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+          ],
+        ),
+        trailing: Text(
+          _timeAgo(notification['createdAt']),
+          style: const TextStyle(fontSize: 12, color: Colors.grey),
+        ),
+        onTap: () {
+          // Handle navigation based on notification type
+        },
       ),
     );
   }
