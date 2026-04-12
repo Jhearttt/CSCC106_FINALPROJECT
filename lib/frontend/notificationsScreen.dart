@@ -405,7 +405,20 @@ class _NotificationsScreenState extends State<NotificationsScreen>
           style: const TextStyle(fontSize: 12, color: Colors.grey),
         ),
         onTap: () {
-          // Handle navigation based on notification type
+          // Navigate to homepage with community feed tab and scroll to specific post
+          final postId = notification['postId'] as int?;
+          if (postId != null) {
+            Navigator.pushAndRemoveUntil(
+              context,
+              MaterialPageRoute(
+                builder: (context) => Homepage(
+                  localUserId: widget.localUserId,
+                  initialPostId: postId,
+                ),
+              ),
+              (route) => false,
+            );
+          }
         },
       ),
     );

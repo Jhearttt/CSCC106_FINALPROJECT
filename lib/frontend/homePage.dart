@@ -53,15 +53,17 @@ const _tabHub = 3;
 
 class Homepage extends StatelessWidget {
   final int? localUserId;
-  const Homepage({super.key, this.localUserId});
+  final int? initialPostId;
+  const Homepage({super.key, this.localUserId, this.initialPostId});
 
   @override
-  Widget build(BuildContext context) => HomePageHome(localUserId: localUserId);
+  Widget build(BuildContext context) => HomePageHome(localUserId: localUserId, initialPostId: initialPostId);
 }
 
 class HomePageHome extends StatefulWidget {
   final int? localUserId;
-  const HomePageHome({super.key, this.localUserId});
+  final int? initialPostId;
+  const HomePageHome({super.key, this.localUserId, this.initialPostId});
 
   @override
   State<HomePageHome> createState() => _HomePageHomeState();
@@ -108,12 +110,16 @@ class _HomePageHomeState extends State<HomePageHome>
   @override
   void initState() {
     super.initState();
+    // Set initial tab to community if there's an initialPostId
+    if (widget.initialPostId != null) {
+      _tab = _tabCommunity;
+    }
     _user = FirebaseAuth.instance.currentUser;
     _loadLocalUserName();
     DatabaseHelper.profilePicVersion.addListener(_loadLocalUserName);
     _screens = [
       DashboardHome(localUserId: widget.localUserId),
-      CommunityFeedScreen(localUserId: widget.localUserId),
+      CommunityFeedScreen(localUserId: widget.localUserId, initialPostId: widget.initialPostId),
       NotificationsScreen(
         localUserId: widget.localUserId,
         firebaseUserId: _getNotificationUserId(),
@@ -337,53 +343,6 @@ class _HomePageHomeState extends State<HomePageHome>
   );
 }
 
-// ✅ ADD THIS METHOD to build the notification badge
-Widget _buildNotificationBadge(String userId) {
-  return StreamBuilder<int>(
-    stream: NotificationService.instance.unreadCountStream(userId),
-    initialData: 0,
-    builder: (context, snapshot) {
-      final unreadCount = snapshot.data ?? 0;
-      
-      return GestureDetector(
-        onTap: () {
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (context) => NotificationsScreen(
-                localUserId: widget.localUserId,
-                firebaseUserId: userId,
-              ),
-            ),
-          );
-        },
-        child: Container(
-          width: 18,
-          height: 18,
-          decoration: BoxDecoration(
-            color: Colors.red,
-            borderRadius: BorderRadius.circular(9),
-            border: Border.all(color: Colors.white, width: 2),
-          ),
-          child: unreadCount > 0
-              ? Center(
-                  child: Text(
-                    unreadCount > 99 ? '99+' : '$unreadCount',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 9,
-                      fontWeight: FontWeight.bold,
-                    ),
-                    textAlign: TextAlign.center,
-                  ),
-                )
-              : null,
-        ),
-      );
-    },
-  );
-}
-
   String _tabLabel(int tab) {
     switch (tab) {
       case _tabDashboard:
@@ -538,10 +497,41 @@ Widget _buildNotificationBadge(String userId) {
             ),
             // Notification badge for notifications tab
             if (isNotifications && _getNotificationUserId() != null)
-              Positioned(
-                right: 0,
-                top: 0,
-                child: _buildNotificationBadge(_getNotificationUserId()!),
+              StreamBuilder<int>(
+                stream: NotificationService.instance.unreadPostsCountStream(_getNotificationUserId()!),
+                initialData: 0,
+                builder: (context, snapshot) {
+                  final unreadCount = snapshot.data ?? 0;
+                  
+                  // Only show badge if there are unread notifications
+                  if (unreadCount > 0) {
+                    return Positioned(
+                      right: 0,
+                      top: 0,
+                      child: Container(
+                        width: 18,
+                        height: 18,
+                        decoration: BoxDecoration(
+                          color: Colors.red,
+                          borderRadius: BorderRadius.circular(9),
+                          border: Border.all(color: Colors.white, width: 2),
+                        ),
+                        child: Center(
+                          child: Text(
+                            unreadCount > 99 ? '99+' : '$unreadCount',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 9,
+                              fontWeight: FontWeight.bold,
+                            ),
+                            textAlign: TextAlign.center,
+                          ),
+                        ),
+                      ),
+                    );
+                  }
+                  return const SizedBox.shrink();
+                },
               ),
           ],
         ),
@@ -678,19 +668,6 @@ Widget _buildNotificationBadge(String userId) {
                   ),
                 ),
 
-                
-
-                _drawerTile(
-                  Icons.emoji_events_rounded,
-                  "Leaderboard",
-                  kVioletSoft,
-                  kViolet,
-                  () {
-                    Navigator.pop(context);
-                    // Jump to dashboard and scroll to leaderboard
-                    setState(() => _tab = _tabDashboard);
-                  },
-                ),
 
                 _drawerTile(
                   Icons.auto_awesome_rounded,

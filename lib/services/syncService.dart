@@ -496,25 +496,32 @@ class SyncService {
   }
 
   /// Pull comments for a post from Firestore → upsert into SQLite.
-  /// Call when opening the CommentsModal.
+  /// Call when opening CommentsModal.
   Future<void> pullCommentsFromFirestore(int postId) async {
-    if (!ConnectivityService.instance.isOnline) return;
+    if (!ConnectivityService.instance.isOnline) {
+      developer.log('Offline - skipping comment pull for post $postId', name: 'SyncService');
+      return;
+    }
     try {
+      developer.log('Pulling comments from Firestore for post $postId', name: 'SyncService');
       final snapshot = await _firestore
           .collection(_kComments)
           .where('postId', isEqualTo: postId)
           .orderBy('dateCommented', descending: false)
           .get();
+      
+      developer.log('Found ${snapshot.docs.length} comments in Firestore for post $postId', name: 'SyncService');
+      
       for (final doc in snapshot.docs) {
+        developer.log('Processing comment: ${doc.data()}', name: 'SyncService');
         await _upsertComment(doc.data());
       }
+      developer.log('Completed pulling comments for post $postId', name: 'SyncService');
     } catch (e) {
       developer.log('Comment pull failed for post $postId: $e',
           name: 'SyncService');
     }
   }
-
-  // ── Private upsert helpers ────────────────────────────────────────────────
 
   Future<void> _upsertPost(Map<String, dynamic> data) async {
     final localId = data['localId'] as int?;

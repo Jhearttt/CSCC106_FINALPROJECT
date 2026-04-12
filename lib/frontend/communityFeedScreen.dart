@@ -196,7 +196,8 @@ class _PostImage extends StatelessWidget {
 // ─── Community Feed Screen ────────────────────────────────────────────────────
 class CommunityFeedScreen extends StatefulWidget {
   final int? localUserId;
-  const CommunityFeedScreen({super.key, this.localUserId});
+  final int? initialPostId;
+  const CommunityFeedScreen({super.key, this.localUserId, this.initialPostId});
   @override
   State<CommunityFeedScreen> createState() => _CommunityFeedScreenState();
 }
@@ -210,6 +211,7 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
   String? _catFilter;
   int _unreadCount = 0;
   final _searchCtrl = TextEditingController();
+  final _scrollCtrl = ScrollController();
 
   final _categories = ['All', 'Programming', 'Academic', 'Design', 'Others'];
   final _typeFilters = ['All', 'Help Request', 'Skill Offer'];
@@ -252,6 +254,7 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
     _connectivitySub?.cancel();
     _bannerCtrl.dispose();
     _searchCtrl.dispose();
+    _scrollCtrl.dispose();
     super.dispose();
   }
 
@@ -264,6 +267,11 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
       await SyncService.instance.pullPostsFromFirestore();
       await _queryLocal();
       await _loadUnreadCount();
+      
+      // Scroll to specific post if initialPostId is provided
+      if (widget.initialPostId != null) {
+        _scrollToPost(widget.initialPostId!);
+      }
     } catch (e, stack) {
       debugPrint('[CommunityFeed] _loadPosts error: $e\n$stack');
       try {
@@ -280,6 +288,27 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
       widget.localUserId!,
     );
     if (mounted) setState(() => _unreadCount = count);
+  }
+
+  // Scroll to specific post by ID
+  void _scrollToPost(int postId) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final postIndex = _posts.indexWhere((post) => post['id'] == postId);
+      if (postIndex != -1 && _scrollCtrl.hasClients) {
+        // Calculate approximate position (each post has roughly 200px height)
+        final estimatedOffset = postIndex * 200.0;
+        _scrollCtrl.animateTo(
+          estimatedOffset,
+          duration: const Duration(milliseconds: 500),
+          curve: Curves.easeOutCubic,
+        );
+        
+        // Highlight the post (optional visual feedback)
+        setState(() {
+          // Could add a highlight state here if needed
+        });
+      }
+    });
   }
 
   Future<void> _queryLocal() async {
@@ -914,6 +943,7 @@ class _CommunityFeedScreenState extends State<CommunityFeedScreen>
                             onRefresh: _loadPosts,
                             color: _kViolet,
                             child: ListView.builder(
+                              controller: _scrollCtrl,
                               padding: const EdgeInsets.fromLTRB(16, 4, 16, 80),
                               itemCount: _posts.length,
                               itemBuilder: (_, i) => _AnimatedPostCard(

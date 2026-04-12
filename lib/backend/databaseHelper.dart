@@ -1,3 +1,4 @@
+import 'dart:developer' as developer;
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
 import 'package:sqflite/sqflite.dart';
@@ -643,6 +644,7 @@ class DatabaseHelper {
   /// containing the list of child comments sorted oldest-first.
   Future<List<Map<String, dynamic>>> getCommentsByPost(int postId) async {
     final db = await _database();
+    developer.log('Querying comments for postId: $postId', name: 'DatabaseHelper');
 
     // All comments flat, joined with user info
     final flat = await db.rawQuery(
@@ -661,6 +663,11 @@ class DatabaseHelper {
     """,
       [postId],
     );
+    
+    developer.log('Found ${flat.length} raw comments for postId: $postId', name: 'DatabaseHelper');
+    for (int i = 0; i < flat.length; i++) {
+      developer.log('Raw comment $i: ${flat[i]}', name: 'DatabaseHelper');
+    }
 
     // Build thread: separate top-level and replies
     final topLevel = <Map<String, dynamic>>[];
@@ -685,6 +692,7 @@ class DatabaseHelper {
       c['replies'] = replies[c['id'] as int] ?? [];
     }
 
+    developer.log('Returning ${topLevel.length} threaded comments for postId: $postId', name: 'DatabaseHelper');
     return topLevel;
   }
 

@@ -178,6 +178,21 @@ class NotificationService {
     }
   }
 
+  // Real-time unread count stream for posts only (exclude chat)
+  Stream<int> unreadPostsCountStream(String userId) {
+    return _db
+        .collection('notifications')
+        .where('userId', isEqualTo: userId)
+        .where('isRead', isEqualTo: false)
+        .where('type', whereIn: ['comment', 'reply', 'accepted'])
+        .snapshots()
+        .map((snap) => snap.size)
+        .handleError((error) {
+          debugPrint('[NotificationService] Posts stream error: $error');
+          return 0;
+        });
+  }
+
   // Real-time unread count stream
   Stream<int> unreadCountStream(String userId) {
     return _db
